@@ -31,12 +31,12 @@ modified (1)
 
 # not happy? step back:
 $ unedit back --yes
-auto-saving current state before restore...
-safety snapshot: 20260802-230237-007494-4cx2  (run: unedit back 20260802-230237-007494-4cx2 to undo this restore)
-
 plan:
   1 files to restore
   1 new files to move aside (created since snapshot)
+
+auto-saving current state before restore...
+safety snapshot: 20260802-230237-007494-4cx2  (run: unedit back 20260802-230237-007494-4cx2 to undo this restore)
 
 new files moved aside to: /tmp/my-project/.unedit/aside/20260802-230237/
 
@@ -44,7 +44,7 @@ done. 1 restored, 1 moved aside, 0 deleted.
 to undo: unedit back 20260802-230237-007494-4cx2
 ```
 
-Restoring is never a one-way door. `back` always auto-saves the current state first, and prints the command to undo the undo.
+Restoring is never a one-way door. `back` prints the plan, then (if you confirm) auto-saves the current state and executes the restore. The auto-save only happens when you confirm — aborting at the prompt creates nothing. The command to undo the undo is always printed.
 
 ---
 
@@ -78,7 +78,7 @@ All commands accept `--dir PATH` to operate on a directory other than `.`.
 
 ### back: how new files are handled
 
-Files that did not exist at snapshot time are moved to `.unedit/aside/<timestamp>/` with their relative paths preserved, not deleted. The tool prints exactly where they went. Use `--hard` to delete them instead (irreversible — stated clearly before it happens). Without `--yes`, a summary is printed and confirmation is required.
+Files that did not exist at snapshot time are moved to `.unedit/aside/<timestamp>/` with their relative paths preserved, not deleted. The tool prints exactly where they went. Use `--hard` to delete them instead; each deleted filename is printed. Empty directories left behind by moved or deleted files are removed automatically. Without `--yes`, a summary is printed and confirmation is required. `--json` implies non-interactive: the prompt is skipped and the restore proceeds, so agents that parse structured output get clean JSON.
 
 ### diff: output contract
 

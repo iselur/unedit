@@ -162,17 +162,25 @@ def cmd_back(args) -> int:
             print(msg)
         lines.append(msg)
 
+    # --json implies non-interactive: skip the confirmation prompt so agents
+    # that parse structured output do not see a prompt mixed into their JSON.
+    yes = args.yes or args.json
+
     try:
         result = _store.restore(
             root=root,
             snap_id=args.id,
-            yes=args.yes,
+            yes=yes,
             hard=args.hard,
             force=args.force,
             print_fn=out,
         )
     except RuntimeError as e:
-        return _err(str(e))
+        msg = str(e)
+        # "no snapshots found" is a normal empty-store condition, not a usage error.
+        if msg == 'no snapshots found':
+            return _err(msg, code=1)
+        return _err(msg)
     except OSError as e:
         return _err('restore failed: {}'.format(e))
 
@@ -189,7 +197,10 @@ def cmd_diff(args) -> int:
     try:
         result = _store.diff_snapshot(root, args.id, patch=args.patch)
     except RuntimeError as e:
-        return _err(str(e))
+        msg = str(e)
+        if msg == 'no snapshots found':
+            return _err(msg, code=1)
+        return _err(msg)
 
     added = result['added']
     modified = result['modified']

@@ -48,13 +48,6 @@ STORE_DIR_NAME = '.unedit'
 # Helpers
 # ---------------------------------------------------------------------------
 
-def format_size(n: int) -> str:
-    for unit in ('B', 'KB', 'MB', 'GB', 'TB'):
-        if n < 1024 or unit == 'TB':
-            return '{:.1f} {}'.format(n / 1.0 if unit == 'B' else n, unit) if unit == 'B' else '{:.1f} {}'.format(n / 1024 ** (['B','KB','MB','GB','TB'].index(unit)), unit)
-    return str(n)
-
-
 def _fmt_size(n: int) -> str:
     """Human-readable file size."""
     if n < 1024:
@@ -260,7 +253,13 @@ def store_object(objects_dir: str, src_path: str, sha256: str) -> None:
     if os.path.exists(dest):
         return  # already stored — this is the deduplication
     os.makedirs(os.path.dirname(dest), exist_ok=True)
-    shutil.copy2(src_path, dest)
+    try:
+        shutil.copy2(src_path, dest)
+    except PermissionError:
+        # Another concurrent writer beat us to it; the object is already there.
+        if os.path.exists(dest):
+            return
+        raise
     # Make object read-only to signal immutability
     try:
         os.chmod(dest, stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
@@ -411,9 +410,9 @@ def restore(
 ) -> Dict:
     """
     Restore a snapshot.
-    1. Auto-save current state.
-    2. Compute plan.
-    3. Confirm (unless --yes).
+    1. Compute plan.
+    2. Confirm (unless --yes).
+    3. Auto-save current state.
     4. Execute.
     Returns summary dict.
     """
@@ -461,15 +460,7 @@ def restore(
     # New files: in current but NOT in snapshot
     new_files = [p for p in current_index if p not in snap_index]
 
-    print_fn('auto-saving current state before restore...')
-    safety_snap = save(root, message='[auto] before restore of {}'.format(resolved_id), force=force)
-    safety_id = safety_snap['id']
-    print_fn('safety snapshot: {}  (run: unedit back {} to undo this restore)'.format(
-        safety_id, safety_id
-    ))
-    print_fn('')
-
-    # Summary
+    # Summary (before confirmation — no side effects yet)
     aside_action = 'delete' if hard else 'move aside'
     print_fn('plan:')
     print_fn('  {} files to restore'.format(len(to_restore)))
@@ -485,6 +476,15 @@ def restore(
             print_fn('aborted.')
             return {'aborted': True}
 
+    # Auto-save happens AFTER confirmation so aborts do not leave phantom snapshots.
+    print_fn('auto-saving current state before restore...')
+    safety_snap = save(root, message='[auto] before restore of {}'.format(resolved_id), force=force)
+    safety_id = safety_snap['id']
+    print_fn('safety snapshot: {}  (run: unedit back {} to undo this restore)'.format(
+        safety_id, safety_id
+    ))
+    print_fn('')
+
     # Execute restore
     aside_dir = None
     if new_files and not hard:
@@ -494,12 +494,19 @@ def restore(
     deleted = []
     moved_aside = []
 
+    # Track parent dirs of new_files so we can clean up empty dirs afterward.
+    new_file_parent_dirs: set = set()
+
     for path in new_files:
         full = os.path.join(root, path)
+        parent = os.path.dirname(full)
+        if parent != root:
+            new_file_parent_dirs.add(parent)
         if hard:
             try:
                 os.unlink(full)
                 deleted.append(path)
+                print_fn('  deleted: {}'.format(path))
             except OSError as e:
                 print_fn('warning: could not delete {}: {}'.format(path, e))
         else:
@@ -511,26 +518,66 @@ def restore(
             except OSError as e:
                 print_fn('warning: could not move {}: {}'.format(path, e))
 
+    # Remove empty directories left behind by moved/deleted new_files.
+    # Sort deepest first so we remove children before parents.
+    for dir_path in sorted(new_file_parent_dirs, key=lambda d: d.count(os.sep), reverse=True):
+        # Only remove if it is not part of the snapshot and is now empty.
+        rel_dir = os.path.relpath(dir_path, root)
+        in_snap = any(
+            f['path'].startswith(rel_dir + '/') or f['path'] == rel_dir
+            for f in manifest['files']
+        )
+        if not in_snap:
+            try:
+                if os.path.isdir(dir_path) and not os.listdir(dir_path):
+                    os.rmdir(dir_path)
+                    # Also try parent, walking upward
+                    parent = os.path.dirname(dir_path)
+                    while parent != root and os.path.isdir(parent) and not os.listdir(parent):
+                        rel_p = os.path.relpath(parent, root)
+                        in_snap_p = any(
+                            f['path'].startswith(rel_p + '/') or f['path'] == rel_p
+                            for f in manifest['files']
+                        )
+                        if in_snap_p:
+                            break
+                        os.rmdir(parent)
+                        parent = os.path.dirname(parent)
+            except OSError:
+                pass
+
     for path in to_restore:
         snap_file = snap_index[path]
         full = os.path.join(root, path)
         os.makedirs(os.path.dirname(full), exist_ok=True)
         if snap_file['type'] == 'symlink':
-            if os.path.lexists(full):
-                os.unlink(full)
-            os.symlink(snap_file['target'], full)
+            try:
+                if os.path.lexists(full):
+                    if os.path.isdir(full) and not os.path.islink(full):
+                        shutil.rmtree(full)
+                    else:
+                        os.unlink(full)
+                os.symlink(snap_file['target'], full)
+            except OSError as e:
+                print_fn('warning: could not restore symlink {}: {}'.format(path, e))
         else:
             obj = _object_path(objects, snap_file['hash'])
             if not os.path.exists(obj):
                 print_fn('warning: object missing for {} — skipping'.format(path))
                 continue
-            if os.path.lexists(full):
-                os.unlink(full)
-            shutil.copy2(obj, full)
             try:
-                os.chmod(full, snap_file['mode'])
-            except OSError:
-                pass
+                if os.path.lexists(full):
+                    if os.path.isdir(full) and not os.path.islink(full):
+                        shutil.rmtree(full)
+                    else:
+                        os.unlink(full)
+                shutil.copy2(obj, full)
+                try:
+                    os.chmod(full, snap_file['mode'])
+                except OSError:
+                    pass
+            except OSError as e:
+                print_fn('warning: could not restore {}: {}'.format(path, e))
 
     result = {
         'restored_from': resolved_id,

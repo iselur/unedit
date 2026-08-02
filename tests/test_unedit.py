@@ -493,6 +493,194 @@ class TestCLI(TempDirMixin, unittest.TestCase):
             self.assertEqual(f.read(), 'original')
 
 
+class TestHardenRegression(TempDirMixin, unittest.TestCase):
+    """Regression tests for bugs found in the pre-release review."""
+
+    def test_restore_file_replaced_by_directory(self):
+        """HIGH: restore must not crash when a snapshotted file is now a directory."""
+        make_tree(self.tmpdir, {
+            'aaa.txt': 'v1',
+            'foo': 'original',
+            'zzz.txt': 'v1',
+        })
+        m = _store.save(self.tmpdir, message='orig')
+
+        # Simulate: agent replaces the regular file 'foo' with a directory
+        with open(os.path.join(self.tmpdir, 'aaa.txt'), 'w') as f:
+            f.write('modified')
+        os.unlink(os.path.join(self.tmpdir, 'foo'))
+        os.makedirs(os.path.join(self.tmpdir, 'foo'))
+        with open(os.path.join(self.tmpdir, 'zzz.txt'), 'w') as f:
+            f.write('modified')
+
+        msgs = []
+        try:
+            result = _store.restore(self.tmpdir, m['id'], yes=True, print_fn=msgs.append)
+        except Exception as e:
+            self.fail('restore raised unexpectedly: {}'.format(e))
+
+        # All three files must be restored
+        with open(os.path.join(self.tmpdir, 'aaa.txt')) as f:
+            self.assertEqual(f.read(), 'v1')
+        with open(os.path.join(self.tmpdir, 'zzz.txt')) as f:
+            self.assertEqual(f.read(), 'v1')
+        # 'foo' should be a regular file again, not a directory
+        self.assertTrue(os.path.isfile(os.path.join(self.tmpdir, 'foo')))
+
+    def test_store_object_concurrent_write_is_harmless(self):
+        """MEDIUM: concurrent store_object calls on the same SHA do not raise."""
+        import threading
+        # Create a file with known content
+        src = os.path.join(self.tmpdir, 'src.txt')
+        with open(src, 'w') as f:
+            f.write('shared content')
+        sha = _store.hash_file(src)
+        objects_dir = os.path.join(self.tmpdir, 'objects')
+        os.makedirs(objects_dir)
+
+        errors = []
+        def store_it():
+            try:
+                _store.store_object(objects_dir, src, sha)
+            except Exception as e:
+                errors.append(str(e))
+
+        threads = [threading.Thread(target=store_it) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(errors, [], 'concurrent store_object raised: {}'.format(errors))
+        # Object must actually be there
+        dest = _store._object_path(objects_dir, sha)
+        self.assertTrue(os.path.exists(dest))
+
+    def test_hard_restore_prints_deleted_filenames(self):
+        """MEDIUM: --hard must print each deleted filename, not just the count."""
+        make_tree(self.tmpdir, {'keep.txt': 'base'})
+        m = _store.save(self.tmpdir)
+        make_tree(self.tmpdir, {'secret.db': 'sensitive', 'wip.py': 'half-done'})
+
+        msgs = []
+        _store.restore(self.tmpdir, m['id'], yes=True, hard=True, print_fn=msgs.append)
+
+        combined = '\n'.join(msgs)
+        self.assertIn('secret.db', combined)
+        self.assertIn('wip.py', combined)
+
+    def test_abort_does_not_create_safety_snapshot(self):
+        """MEDIUM: aborting at the confirmation prompt must not create a snapshot."""
+        import unittest.mock as mock
+        make_tree(self.tmpdir, {'x.txt': 'v1'})
+        m = _store.save(self.tmpdir)
+        store = _store._store_dir(self.tmpdir)
+
+        with mock.patch('builtins.input', return_value='n'):
+            result = _store.restore(self.tmpdir, m['id'], yes=False,
+                                    print_fn=lambda x: None)
+
+        self.assertTrue(result.get('aborted'))
+        # Only the original snapshot should exist
+        snaps = _store.list_snapshots(store)
+        self.assertEqual(len(snaps), 1, 'abort created a phantom safety snapshot')
+
+    def test_abort_does_not_print_safety_snapshot_message(self):
+        """MEDIUM: abort must not print 'to undo this restore' — nothing was restored."""
+        import unittest.mock as mock
+        make_tree(self.tmpdir, {'x.txt': 'v1'})
+        m = _store.save(self.tmpdir)
+
+        msgs = []
+        with mock.patch('builtins.input', return_value='n'):
+            _store.restore(self.tmpdir, m['id'], yes=False, print_fn=msgs.append)
+
+        combined = '\n'.join(msgs)
+        self.assertNotIn('safety snapshot', combined)
+        self.assertNotIn('undo this restore', combined)
+
+    def test_restore_removes_ghost_empty_directories(self):
+        """MEDIUM: directories created by agent that have no snapshot counterpart
+        must be removed after restore, not left as empty ghosts."""
+        make_tree(self.tmpdir, {'main.py': 'main'})
+        m = _store.save(self.tmpdir, message='initial')
+
+        # Agent creates nested directories and files
+        os.makedirs(os.path.join(self.tmpdir, 'agent_work', 'subdir'))
+        with open(os.path.join(self.tmpdir, 'agent_work', 'result.txt'), 'w') as f:
+            f.write('data')
+        with open(os.path.join(self.tmpdir, 'agent_work', 'subdir', 'nested.txt'), 'w') as f:
+            f.write('nested')
+
+        _store.restore(self.tmpdir, m['id'], yes=True, print_fn=lambda x: None)
+
+        self.assertFalse(
+            os.path.exists(os.path.join(self.tmpdir, 'agent_work')),
+            'agent_work directory was not cleaned up after restore'
+        )
+        self.assertFalse(
+            os.path.exists(os.path.join(self.tmpdir, 'agent_work', 'subdir')),
+            'agent_work/subdir was not cleaned up after restore'
+        )
+
+    def test_json_back_without_yes_produces_valid_json(self):
+        """MEDIUM: unedit back --json must not mix a prompt into stdout."""
+        import subprocess
+        make_tree(self.tmpdir, {'main.py': 'original'})
+        _store.save(self.tmpdir, message='base')
+        with open(os.path.join(self.tmpdir, 'main.py'), 'a') as f:
+            f.write('\nmod')
+
+        result = subprocess.run(
+            [
+                sys.executable, '-c',
+                'import sys; sys.path.insert(0, {!r}); '
+                'from unedit.cli import main; '
+                'main(["--dir", {!r}, "back", "--json"])'.format(
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                    self.tmpdir,
+                )
+            ],
+            input=b'',
+            capture_output=True,
+        )
+        import json as _json
+        try:
+            data = _json.loads(result.stdout)
+        except Exception as e:
+            self.fail('--json output is not valid JSON: {}\nstdout={!r}'.format(
+                e, result.stdout[:200]))
+        # Should have proceeded (since --json implies --yes) and contain restore keys
+        self.assertIn('restored_from', data)
+
+    def test_back_exit_1_when_no_snapshots(self):
+        """LOW: 'unedit back' with no snapshots must exit 1, not 2."""
+        try:
+            from unedit.cli import main as _main
+            _main(['--dir', self.tmpdir, 'back'])
+        except SystemExit as e:
+            self.assertEqual(e.code, 1, 'expected exit 1 for no-snapshots, got {}'.format(e.code))
+        else:
+            self.fail('expected SystemExit')
+
+    def test_diff_exit_1_when_no_snapshots(self):
+        """LOW: 'unedit diff' with no snapshots must exit 1, not 2."""
+        try:
+            from unedit.cli import main as _main
+            _main(['--dir', self.tmpdir, 'diff'])
+        except SystemExit as e:
+            self.assertEqual(e.code, 1, 'expected exit 1 for no-snapshots, got {}'.format(e.code))
+        else:
+            self.fail('expected SystemExit')
+
+    def test_format_size_dead_code_removed(self):
+        """LOW: format_size() must not exist — it was dead code with a severe bug."""
+        self.assertFalse(
+            hasattr(_store, 'format_size'),
+            'format_size() should have been removed but is still present'
+        )
+
+
 class TestIgnorePatterns(TempDirMixin, unittest.TestCase):
 
     def test_gitignore_excludes_pyc(self):
