@@ -1,0 +1,759 @@
+"""
+Core snapshot logic for unedit.
+
+Layout under .unedit/ (relative to the project root):
+  objects/<xx>/<rest>       content-addressed file blobs, SHA-256, stored once
+  snapshots/<id>.json       manifest per snapshot (human-readable JSON)
+  aside/<timestamp>/        new files moved here during restore
+"""
+
+from __future__ import annotations
+
+import datetime
+import fnmatch
+import hashlib
+import json
+import os
+import random
+import shutil
+import stat
+import string
+import sys
+import time
+from typing import Dict, Iterator, List, Optional, Tuple
+
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+DEFAULT_EXCLUDES: frozenset = frozenset({
+    '.git', '.unedit', 'node_modules', '.venv', 'venv', '__pycache__',
+    '.mypy_cache', '.pytest_cache', 'dist', 'build', 'target',
+    '.next', '.DS_Store',
+})
+
+# Roots that are dangerous to snapshot
+DANGER_ROOTS: frozenset = frozenset({
+    '/', '/etc', '/usr', '/var', '/opt', '/System', '/Windows',
+})
+
+SIZE_LIMIT = 2 * 1024 ** 3   # 2 GB
+FILE_LIMIT = 50_000
+
+STORE_DIR_NAME = '.unedit'
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def format_size(n: int) -> str:
+    for unit in ('B', 'KB', 'MB', 'GB', 'TB'):
+        if n < 1024 or unit == 'TB':
+            return '{:.1f} {}'.format(n / 1.0 if unit == 'B' else n, unit) if unit == 'B' else '{:.1f} {}'.format(n / 1024 ** (['B','KB','MB','GB','TB'].index(unit)), unit)
+    return str(n)
+
+
+def _fmt_size(n: int) -> str:
+    """Human-readable file size."""
+    if n < 1024:
+        return '{} B'.format(n)
+    elif n < 1024 ** 2:
+        return '{:.1f} KB'.format(n / 1024)
+    elif n < 1024 ** 3:
+        return '{:.1f} MB'.format(n / 1024 ** 2)
+    else:
+        return '{:.1f} GB'.format(n / 1024 ** 3)
+
+
+def _new_id() -> str:
+    """Generate a sortable snapshot ID: YYYYMMDD-HHMMSS-uuuuuu-xxxx.
+    The microsecond field (uuuuuu) ensures correct ordering within the same second."""
+    now = datetime.datetime.now()
+    ts = now.strftime('%Y%m%d-%H%M%S')
+    us = '{:06d}'.format(now.microsecond)
+    suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
+    return '{}-{}-{}'.format(ts, us, suffix)
+
+
+def _store_dir(root: str) -> str:
+    return os.path.join(root, STORE_DIR_NAME)
+
+
+def _objects_dir(store: str) -> str:
+    return os.path.join(store, 'objects')
+
+
+def _snapshots_dir(store: str) -> str:
+    return os.path.join(store, 'snapshots')
+
+
+def _object_path(objects_dir: str, sha256: str) -> str:
+    return os.path.join(objects_dir, sha256[:2], sha256[2:])
+
+
+def _snap_path(store: str, snap_id: str) -> str:
+    return os.path.join(_snapshots_dir(store), snap_id + '.json')
+
+
+# ---------------------------------------------------------------------------
+# Safety checks
+# ---------------------------------------------------------------------------
+
+def check_safe_root(root: str) -> Optional[str]:
+    """Return an error message if root is unsafe, else None."""
+    resolved = os.path.realpath(root)
+    if resolved in DANGER_ROOTS:
+        return (
+            "refusing to snapshot {} — snapshotting system directories could corrupt "
+            "your system on restore. cd into a project directory first.".format(resolved)
+        )
+    home = os.path.realpath(os.path.expanduser('~'))
+    if resolved == home:
+        return (
+            "refusing to snapshot your home directory — this would capture private "
+            "files and consume large amounts of disk space. "
+            "cd into a project directory first."
+        )
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Ignore / exclusion logic
+# ---------------------------------------------------------------------------
+
+def load_ignore_patterns(root: str) -> List[str]:
+    """Load patterns from .gitignore and .uneditignore in root."""
+    patterns: List[str] = []
+    for fname in ('.gitignore', '.uneditignore'):
+        fpath = os.path.join(root, fname)
+        if os.path.isfile(fpath):
+            try:
+                with open(fpath, 'r', errors='replace') as f:
+                    for line in f:
+                        line = line.rstrip('\n').rstrip('\r')
+                        # Strip trailing slash (marks directory, but we treat same)
+                        stripped = line.rstrip('/')
+                        if stripped and not stripped.startswith('#'):
+                            patterns.append(stripped)
+            except OSError:
+                pass
+    return patterns
+
+
+def _matches_pattern(rel_path: str, pattern: str) -> bool:
+    """Check if rel_path matches a single ignore pattern."""
+    rel_path = rel_path.replace('\\', '/')
+    name = rel_path.rsplit('/', 1)[-1]
+    if '/' in pattern:
+        # Pattern with slash: match against full path
+        return fnmatch.fnmatch(rel_path, pattern)
+    else:
+        # No slash: match against basename only
+        return fnmatch.fnmatch(name, pattern)
+
+
+def is_excluded(name: str, rel_path: str, default_excludes: frozenset, patterns: List[str]) -> bool:
+    """True if this file/dir should be skipped."""
+    if name in default_excludes:
+        return True
+    for pat in patterns:
+        if _matches_pattern(rel_path, pat):
+            return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Tree scanning
+# ---------------------------------------------------------------------------
+
+def scan_tree(
+    root: str,
+    default_excludes: frozenset = DEFAULT_EXCLUDES,
+    patterns: Optional[List[str]] = None,
+) -> Iterator[Tuple[str, os.stat_result, bool, Optional[str]]]:
+    """
+    Walk root, yielding (rel_path, stat_result, is_symlink, symlink_target).
+    rel_path is relative to root, using forward slashes.
+    Symlinks are yielded as symlinks (not followed).
+    """
+    if patterns is None:
+        patterns = load_ignore_patterns(root)
+
+    for dirpath, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
+        # Compute relative path of current directory
+        rel_dir = os.path.relpath(dirpath, root)
+        if rel_dir == '.':
+            rel_dir = ''
+
+        # Prune excluded directories in-place
+        pruned = []
+        for d in dirnames:
+            rel_d = '{}/{}'.format(rel_dir, d) if rel_dir else d
+            if not is_excluded(d, rel_d, default_excludes, patterns):
+                pruned.append(d)
+        dirnames[:] = pruned
+
+        # Yield files and symlinks in this directory
+        for fname in filenames:
+            full_path = os.path.join(dirpath, fname)
+            rel_path = '{}/{}'.format(rel_dir, fname) if rel_dir else fname
+
+            # Check exclusion for the file itself
+            if is_excluded(fname, rel_path, default_excludes, patterns):
+                continue
+
+            try:
+                st = os.lstat(full_path)
+            except OSError:
+                continue
+
+            if stat.S_ISLNK(st.st_mode):
+                try:
+                    target = os.readlink(full_path)
+                except OSError:
+                    continue
+                yield rel_path, st, True, target
+            else:
+                yield rel_path, st, False, None
+
+        # Also check for symlinks in dirnames that were not pruned
+        # os.walk with followlinks=False lists dir-symlinks in dirnames
+        # We need to yield them as symlinks, not follow them
+        for d in list(dirnames):
+            full_d = os.path.join(dirpath, d)
+            try:
+                st = os.lstat(full_d)
+            except OSError:
+                continue
+            if stat.S_ISLNK(st.st_mode):
+                rel_d = '{}/{}'.format(rel_dir, d) if rel_dir else d
+                try:
+                    target = os.readlink(full_d)
+                except OSError:
+                    continue
+                yield rel_d, st, True, target
+                dirnames.remove(d)  # don't recurse into symlinked dirs
+
+
+# ---------------------------------------------------------------------------
+# Hashing
+# ---------------------------------------------------------------------------
+
+def hash_file(path: str) -> str:
+    """SHA-256 hex digest of file contents."""
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(65536), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Object store
+# ---------------------------------------------------------------------------
+
+def store_object(objects_dir: str, src_path: str, sha256: str) -> None:
+    """Copy src_path into the object store at the correct content-addressed path."""
+    dest = _object_path(objects_dir, sha256)
+    if os.path.exists(dest):
+        return  # already stored — this is the deduplication
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    shutil.copy2(src_path, dest)
+    # Make object read-only to signal immutability
+    try:
+        os.chmod(dest, stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+    except OSError:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Save
+# ---------------------------------------------------------------------------
+
+def save(root: str, message: str = '', force: bool = False) -> Dict:
+    """
+    Snapshot the current directory tree.
+    Returns the manifest dict.
+    Raises RuntimeError on refusal conditions.
+    """
+    err = check_safe_root(root)
+    if err:
+        raise RuntimeError(err)
+
+    store = _store_dir(root)
+    objects = _objects_dir(store)
+    patterns = load_ignore_patterns(root)
+
+    # First pass: count files and total size for guard-rail checks
+    total_size = 0
+    total_files = 0
+    entries = []
+    for rel_path, st, is_lnk, lnk_target in scan_tree(root, DEFAULT_EXCLUDES, patterns):
+        total_files += 1
+        if not is_lnk:
+            total_size += st.st_size
+        if not force:
+            if total_files > FILE_LIMIT:
+                raise RuntimeError(
+                    'tree has more than {:,} files — refusing to snapshot '
+                    '(use --force to override)'.format(FILE_LIMIT)
+                )
+            if total_size > SIZE_LIMIT:
+                raise RuntimeError(
+                    'tree exceeds 2 GB — refusing to snapshot '
+                    '(use --force to override)'
+                )
+        entries.append((rel_path, st, is_lnk, lnk_target))
+
+    os.makedirs(objects, exist_ok=True)
+    os.makedirs(_snapshots_dir(store), exist_ok=True)
+
+    snap_id = _new_id()
+    files = []
+
+    for rel_path, st, is_lnk, lnk_target in entries:
+        if is_lnk:
+            files.append({
+                'path': rel_path,
+                'type': 'symlink',
+                'target': lnk_target,
+                'mtime': st.st_mtime,
+            })
+        else:
+            full_path = os.path.join(root, rel_path)
+            try:
+                sha = hash_file(full_path)
+            except OSError:
+                continue
+            store_object(objects, full_path, sha)
+            files.append({
+                'path': rel_path,
+                'type': 'file',
+                'hash': sha,
+                'mode': stat.S_IMODE(st.st_mode),
+                'mtime': st.st_mtime,
+                'size': st.st_size,
+            })
+
+    manifest = {
+        'id': snap_id,
+        'timestamp': datetime.datetime.now().isoformat(timespec='seconds'),
+        'message': message,
+        'file_count': len(files),
+        'total_size': sum(f.get('size', 0) for f in files),
+        'files': files,
+    }
+
+    snap_file = _snap_path(store, snap_id)
+    with open(snap_file, 'w') as f:
+        json.dump(manifest, f, indent=2)
+        f.write('\n')
+
+    return manifest
+
+
+# ---------------------------------------------------------------------------
+# List / load
+# ---------------------------------------------------------------------------
+
+def load_manifest(store: str, snap_id: str) -> Dict:
+    """Load a snapshot manifest by ID. Raises FileNotFoundError if missing."""
+    path = _snap_path(store, snap_id)
+    with open(path) as f:
+        return json.load(f)
+
+
+def list_snapshots(store: str) -> List[Dict]:
+    """Return manifests sorted oldest-first. Returns [] if store doesn't exist."""
+    snaps_dir = _snapshots_dir(store)
+    if not os.path.isdir(snaps_dir):
+        return []
+    results = []
+    for fname in sorted(os.listdir(snaps_dir)):
+        if fname.endswith('.json'):
+            try:
+                with open(os.path.join(snaps_dir, fname)) as f:
+                    results.append(json.load(f))
+            except (OSError, json.JSONDecodeError):
+                pass
+    return results
+
+
+def resolve_snap_id(store: str, snap_id: Optional[str]) -> str:
+    """Resolve a snapshot ID (or None → newest). Raises RuntimeError if not found."""
+    snaps = list_snapshots(store)
+    if not snaps:
+        raise RuntimeError('no snapshots found')
+    if snap_id is None:
+        return snaps[-1]['id']
+    # Allow prefix matching
+    matches = [s['id'] for s in snaps if s['id'].startswith(snap_id)]
+    if not matches:
+        raise RuntimeError('no snapshot matching {!r}'.format(snap_id))
+    if len(matches) > 1:
+        raise RuntimeError('ambiguous id {!r} matches: {}'.format(snap_id, ', '.join(matches)))
+    return matches[0]
+
+
+# ---------------------------------------------------------------------------
+# Restore (back)
+# ---------------------------------------------------------------------------
+
+def restore(
+    root: str,
+    snap_id: Optional[str],
+    yes: bool = False,
+    hard: bool = False,
+    force: bool = False,
+    print_fn=print,
+) -> Dict:
+    """
+    Restore a snapshot.
+    1. Auto-save current state.
+    2. Compute plan.
+    3. Confirm (unless --yes).
+    4. Execute.
+    Returns summary dict.
+    """
+    err = check_safe_root(root)
+    if err:
+        raise RuntimeError(err)
+
+    store = _store_dir(root)
+    resolved_id = resolve_snap_id(store, snap_id)
+    manifest = load_manifest(store, resolved_id)
+    objects = _objects_dir(store)
+
+    # Build index of snapshot files
+    snap_index: Dict[str, Dict] = {f['path']: f for f in manifest['files']}
+
+    # Scan current tree
+    patterns = load_ignore_patterns(root)
+    current_index: Dict[str, Tuple[os.stat_result, bool, Optional[str]]] = {}
+    for rel_path, st, is_lnk, lnk_target in scan_tree(root, DEFAULT_EXCLUDES, patterns):
+        current_index[rel_path] = (st, is_lnk, lnk_target)
+
+    # Files to restore: in snapshot but not matching current state
+    to_restore = []
+    for path, snap_file in snap_index.items():
+        if snap_file['type'] == 'symlink':
+            cur = current_index.get(path)
+            if cur is None or not cur[1] or cur[2] != snap_file['target']:
+                to_restore.append(path)
+        else:
+            cur = current_index.get(path)
+            if cur is None:
+                to_restore.append(path)
+            else:
+                cur_st, cur_lnk, _ = cur
+                if cur_lnk:
+                    to_restore.append(path)
+                else:
+                    try:
+                        cur_hash = hash_file(os.path.join(root, path))
+                        if cur_hash != snap_file['hash']:
+                            to_restore.append(path)
+                    except OSError:
+                        to_restore.append(path)
+
+    # New files: in current but NOT in snapshot
+    new_files = [p for p in current_index if p not in snap_index]
+
+    print_fn('auto-saving current state before restore...')
+    safety_snap = save(root, message='[auto] before restore of {}'.format(resolved_id), force=force)
+    safety_id = safety_snap['id']
+    print_fn('safety snapshot: {}  (run: unedit back {} to undo this restore)'.format(
+        safety_id, safety_id
+    ))
+    print_fn('')
+
+    # Summary
+    aside_action = 'delete' if hard else 'move aside'
+    print_fn('plan:')
+    print_fn('  {} files to restore'.format(len(to_restore)))
+    print_fn('  {} new files to {} (created since snapshot)'.format(len(new_files), aside_action))
+    print_fn('')
+
+    if not yes:
+        try:
+            answer = input('proceed? [y/N] ').strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = ''
+        if answer not in ('y', 'yes'):
+            print_fn('aborted.')
+            return {'aborted': True}
+
+    # Execute restore
+    aside_dir = None
+    if new_files and not hard:
+        ts = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
+        aside_dir = os.path.join(store, 'aside', ts)
+
+    deleted = []
+    moved_aside = []
+
+    for path in new_files:
+        full = os.path.join(root, path)
+        if hard:
+            try:
+                os.unlink(full)
+                deleted.append(path)
+            except OSError as e:
+                print_fn('warning: could not delete {}: {}'.format(path, e))
+        else:
+            dest = os.path.join(aside_dir, path)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            try:
+                shutil.move(full, dest)
+                moved_aside.append(path)
+            except OSError as e:
+                print_fn('warning: could not move {}: {}'.format(path, e))
+
+    for path in to_restore:
+        snap_file = snap_index[path]
+        full = os.path.join(root, path)
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        if snap_file['type'] == 'symlink':
+            if os.path.lexists(full):
+                os.unlink(full)
+            os.symlink(snap_file['target'], full)
+        else:
+            obj = _object_path(objects, snap_file['hash'])
+            if not os.path.exists(obj):
+                print_fn('warning: object missing for {} — skipping'.format(path))
+                continue
+            if os.path.lexists(full):
+                os.unlink(full)
+            shutil.copy2(obj, full)
+            try:
+                os.chmod(full, snap_file['mode'])
+            except OSError:
+                pass
+
+    result = {
+        'restored_from': resolved_id,
+        'safety_snapshot': safety_id,
+        'restored': len(to_restore),
+        'moved_aside': len(moved_aside),
+        'aside_dir': aside_dir,
+        'deleted': len(deleted),
+    }
+
+    if moved_aside:
+        print_fn('')
+        print_fn('new files moved aside to: {}/'.format(aside_dir))
+
+    print_fn('')
+    print_fn('done. {} restored, {} moved aside, {} deleted.'.format(
+        len(to_restore), len(moved_aside), len(deleted)
+    ))
+    print_fn('to undo: unedit back {}'.format(safety_id))
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Show
+# ---------------------------------------------------------------------------
+
+def show_snapshot(store: str, snap_id: Optional[str]) -> Tuple[Dict, List[Dict]]:
+    """Return (manifest_header, file_list) for a snapshot."""
+    resolved_id = resolve_snap_id(store, snap_id)
+    manifest = load_manifest(store, resolved_id)
+    return manifest, manifest.get('files', [])
+
+
+# ---------------------------------------------------------------------------
+# Diff
+# ---------------------------------------------------------------------------
+
+def diff_snapshot(root: str, snap_id: Optional[str], patch: bool = False) -> Dict:
+    """
+    Compare current tree against a snapshot.
+    Returns dict with added/modified/removed lists, and optionally patch text.
+    """
+    err = check_safe_root(root)
+    if err:
+        raise RuntimeError(err)
+
+    store = _store_dir(root)
+    resolved_id = resolve_snap_id(store, snap_id)
+    manifest = load_manifest(store, resolved_id)
+    objects = _objects_dir(store)
+
+    snap_index: Dict[str, Dict] = {f['path']: f for f in manifest['files']}
+
+    patterns = load_ignore_patterns(root)
+    current_index: Dict[str, Tuple] = {}
+    for rel_path, st, is_lnk, lnk_target in scan_tree(root, DEFAULT_EXCLUDES, patterns):
+        current_index[rel_path] = (st, is_lnk, lnk_target)
+
+    added = []
+    modified = []
+    removed = []
+
+    for path, snap_file in snap_index.items():
+        if path not in current_index:
+            removed.append({
+                'path': path,
+                'size': snap_file.get('size', 0),
+                'type': snap_file['type'],
+            })
+        else:
+            cur_st, cur_lnk, cur_target = current_index[path]
+            if snap_file['type'] == 'symlink':
+                if not cur_lnk or cur_target != snap_file['target']:
+                    modified.append({
+                        'path': path,
+                        'type': 'symlink',
+                        'old_target': snap_file['target'],
+                        'new_target': cur_target,
+                    })
+            else:
+                if cur_lnk:
+                    modified.append({'path': path, 'type': 'file',
+                                     'old_size': snap_file.get('size', 0),
+                                     'new_size': cur_st.st_size})
+                else:
+                    try:
+                        cur_hash = hash_file(os.path.join(root, path))
+                        if cur_hash != snap_file['hash']:
+                            modified.append({
+                                'path': path,
+                                'type': 'file',
+                                'old_size': snap_file.get('size', 0),
+                                'new_size': cur_st.st_size,
+                            })
+                    except OSError:
+                        pass
+
+    for path in current_index:
+        if path not in snap_index:
+            cur_st, cur_lnk, _ = current_index[path]
+            added.append({
+                'path': path,
+                'size': cur_st.st_size if not cur_lnk else 0,
+                'type': 'symlink' if cur_lnk else 'file',
+            })
+
+    result: Dict = {
+        'snapshot_id': resolved_id,
+        'snapshot_timestamp': manifest.get('timestamp', ''),
+        'snapshot_message': manifest.get('message', ''),
+        'added': sorted(added, key=lambda x: x['path']),
+        'modified': sorted(modified, key=lambda x: x['path']),
+        'removed': sorted(removed, key=lambda x: x['path']),
+    }
+
+    if patch:
+        import difflib
+        patches = []
+        for entry in result['modified']:
+            if entry['type'] != 'file':
+                continue
+            path = entry['path']
+            obj_path = _object_path(objects, snap_index[path]['hash'])
+            cur_path = os.path.join(root, path)
+            try:
+                with open(obj_path, 'r', errors='replace') as f:
+                    old_lines = f.readlines()
+                with open(cur_path, 'r', errors='replace') as f:
+                    new_lines = f.readlines()
+                diff = list(difflib.unified_diff(
+                    old_lines, new_lines,
+                    fromfile='a/' + path,
+                    tofile='b/' + path,
+                ))
+                if diff:
+                    patches.append(''.join(diff))
+            except OSError:
+                pass
+        result['patch'] = ''.join(patches)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Drop
+# ---------------------------------------------------------------------------
+
+def drop_snapshots(store: str, snap_ids: List[str], all_snaps: bool = False) -> Dict:
+    """Delete snapshots and GC orphaned objects."""
+    snaps = list_snapshots(store)
+    if not snaps:
+        raise RuntimeError('no snapshots to drop')
+
+    if all_snaps:
+        to_drop = {s['id'] for s in snaps}
+    else:
+        to_drop = set()
+        for sid in snap_ids:
+            resolved = resolve_snap_id(store, sid)
+            to_drop.add(resolved)
+
+    # Delete snapshot files
+    for snap_id in to_drop:
+        sp = _snap_path(store, snap_id)
+        if os.path.exists(sp):
+            os.unlink(sp)
+
+    # GC: find all hashes still in use
+    remaining = list_snapshots(store)
+    in_use = set()
+    for s in remaining:
+        for f in s.get('files', []):
+            if f.get('type') == 'file' and 'hash' in f:
+                in_use.add(f['hash'])
+
+    # Remove orphaned objects
+    gc_count = 0
+    objects_dir = _objects_dir(store)
+    if os.path.isdir(objects_dir):
+        for prefix in os.listdir(objects_dir):
+            prefix_dir = os.path.join(objects_dir, prefix)
+            if not os.path.isdir(prefix_dir):
+                continue
+            for fname in os.listdir(prefix_dir):
+                sha = prefix + fname
+                if sha not in in_use:
+                    try:
+                        os.unlink(os.path.join(prefix_dir, fname))
+                        gc_count += 1
+                    except OSError:
+                        pass
+            # Remove empty prefix dir
+            try:
+                if not os.listdir(prefix_dir):
+                    os.rmdir(prefix_dir)
+            except OSError:
+                pass
+
+    return {'dropped': len(to_drop), 'gc_objects': gc_count}
+
+
+# ---------------------------------------------------------------------------
+# Where
+# ---------------------------------------------------------------------------
+
+def where_info(root: str) -> Dict:
+    """Return info about the snapshot storage location."""
+    store = _store_dir(root)
+    total_bytes = 0
+    snap_count = len(list_snapshots(store))
+
+    if os.path.isdir(store):
+        for dirpath, _, filenames in os.walk(store):
+            for fname in filenames:
+                try:
+                    total_bytes += os.path.getsize(os.path.join(dirpath, fname))
+                except OSError:
+                    pass
+
+    return {
+        'store_dir': store,
+        'snap_count': snap_count,
+        'total_bytes': total_bytes,
+        'total_size': _fmt_size(total_bytes),
+    }

@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "unedit"
+version = "0.1.0"
+description = "Snapshot your working tree before an agent edits it, step back if you do not like the result. Zero dependencies."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+authors = [{ name = "stillworks contributors" }]
+keywords = [
+  "snapshot", "backup", "ai-agents", "coding-agents", "undo",
+  "file-recovery", "restore", "agentic-workflows",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: System :: Archiving :: Backup",
+  "Topic :: Software Development :: Version Control",
+]
+
+[project.scripts]
+unedit = "unedit.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/iselur/unedit"
+
+[tool.setuptools]
+packages = ["unedit"]
