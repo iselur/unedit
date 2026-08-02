@@ -4,8 +4,15 @@ A safety net for letting an agent loose on your files.
 
 Snapshot your working tree before an agent edits it. Step back with one command if you do not like the result. No git required. No daemon running. No background watcher.
 
+```bash
+pip install git+https://github.com/iselur/unedit
 ```
-pip install unedit
+
+Or run it straight from a checkout, no install needed — it is stdlib only:
+
+```bash
+git clone https://github.com/iselur/unedit
+cd unedit && python3 -m unedit --help
 ```
 
 ---
@@ -214,11 +221,17 @@ unedit occupies a specific gap: no background watcher required, no tie to any sp
 
 ---
 
+
 ## Part of a small family
 
-unedit is part of a small family of zero-dependency tools for working with coding agents — see stillworks: https://github.com/iselur/stillworks
+Four tools for working with coding agents, same house style: zero dependencies,
+MIT, no API key, nothing leaves your machine. None of them call a model — that is
+the point, since the thing being checked already is one.
 
----
+- [stillworks](https://github.com/iselur/stillworks) — record what your code does now, catch when it changes later
+- [agentdiff](https://github.com/iselur/agentdiff) — see what the agent actually changed, before you merge
+- [agentlog](https://github.com/iselur/agentlog) — what did your coding agent actually do today?
+- [unedit](https://github.com/iselur/unedit) — a safety net for letting an agent loose on your files  ← you are here
 
 ## License
 
