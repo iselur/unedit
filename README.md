@@ -5,7 +5,7 @@ A safety net for letting an agent loose on your files.
 Snapshot your working tree before an agent edits it. Step back with one command if you do not like the result. No git required. No daemon running. No background watcher.
 
 ```bash
-pip install git+https://github.com/iselur/unedit
+pip install unedit
 ```
 
 Or run it straight from a checkout, no install needed — it is stdlib only:
