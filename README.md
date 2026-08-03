@@ -5,7 +5,8 @@ A safety net for letting an agent loose on your files.
 Snapshot your working tree before an agent edits it. Step back with one command if you do not like the result. No git required. No daemon running. No background watcher.
 
 ```bash
-pip install unedit
+pip install 'stillworks[all]'   # all four agent tools, including this one
+pip install unedit              # or just this one, zero dependencies
 ```
 
 Or run it straight from a checkout, no install needed — it is stdlib only:
@@ -232,6 +233,13 @@ the point, since the thing being checked already is one.
 - [agentdiff](https://github.com/iselur/agentdiff) — see what the agent actually changed, before you merge
 - [agentlog](https://github.com/iselur/agentlog) — what did your coding agent actually do today?
 - [unedit](https://github.com/iselur/unedit) — a safety net for letting an agent loose on your files  ← you are here
+
+One install gets all four, and `stillworks tools` says which ones you have:
+
+```sh
+pip install 'stillworks[all]'
+stillworks tools
+```
 
 ## License
 

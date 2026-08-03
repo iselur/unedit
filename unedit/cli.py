@@ -18,6 +18,7 @@ import json
 import os
 import sys
 
+from . import __version__
 from . import store as _store
 
 
@@ -309,6 +310,11 @@ def build_parser() -> argparse.ArgumentParser:
             '  unedit diff\n'
             '  unedit where\n'
         ),
+    )
+    p.add_argument(
+        '--version',
+        action='version',
+        version='unedit {}'.format(__version__),
     )
     p.add_argument(
         '--dir',

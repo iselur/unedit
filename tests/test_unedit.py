@@ -24,6 +24,7 @@ import unittest
 # Ensure the package is importable even without install
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from unedit import __version__
 from unedit import store as _store
 from unedit.cli import build_parser, main
 
@@ -701,6 +702,38 @@ class TestIgnorePatterns(TempDirMixin, unittest.TestCase):
     def test_matches_pattern_wildcard(self):
         self.assertTrue(_store._matches_pattern('foo.pyc', '*.pyc'))
         self.assertFalse(_store._matches_pattern('foo.py', '*.pyc'))
+
+
+class TestVersionFlag(unittest.TestCase):
+    """`--version` is how `stillworks tools` detects an install."""
+
+    def _run(self, args):
+        import io
+        buf, old, code = io.StringIO(), sys.stdout, 0
+        sys.stdout = buf
+        try:
+            main(args)
+        except SystemExit as exc:
+            code = exc.code or 0
+        finally:
+            sys.stdout = old
+        return code, buf.getvalue()
+
+    def test_version_prints_the_name_and_the_number(self):
+        code, out = self._run(['--version'])
+        self.assertEqual(code, 0)
+        self.assertIn('unedit', out)
+        self.assertIn(__version__, out)
+
+    def test_version_works_with_no_subcommand_and_no_store(self):
+        # It runs anywhere, including outside a project with no snapshots.
+        code, _ = self._run(['--version'])
+        self.assertEqual(code, 0)
+
+    def test_version_is_the_last_whitespace_token(self):
+        # `stillworks tools` parses the trailing token; keep that shape.
+        _code, out = self._run(['--version'])
+        self.assertTrue(out.split()[-1][:1].isdigit())
 
 
 if __name__ == '__main__':
