@@ -413,9 +413,11 @@ class TestCLI(TempDirMixin, unittest.TestCase):
         code = self._run(['save'])
         self.assertEqual(code, 0)
 
-    def test_list_exit_1_when_no_snapshots(self):
+    def test_list_exit_0_when_no_snapshots(self):
+        # An empty store is a normal state, not a finding.  This used to exit 1
+        # and a script branching on that read "nothing saved yet" as an error.
         code = self._run(['list'])
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 0)
 
     def test_list_exit_0_after_save(self):
         make_tree(self.tmpdir, {'a.py': 'x'})

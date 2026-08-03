@@ -112,6 +112,18 @@ def check_safe_root(root: str) -> Optional[str]:
     return None
 
 
+def one_line(text) -> str:
+    """Text that cannot become two rows of a table.
+
+    A snapshot message and a filename are both attacker-adjacent: a newline in
+    either forges a row that looks exactly like a real snapshot, and `unedit
+    list` is read by people deciding what to restore.
+    """
+    if not isinstance(text, str):
+        return ''
+    return ''.join(' ' if ch in '\r\n\t' or ord(ch) < 32 else ch for ch in text)
+
+
 # ---------------------------------------------------------------------------
 # Ignore / exclusion logic
 # ---------------------------------------------------------------------------
@@ -139,6 +151,11 @@ def _matches_pattern(rel_path: str, pattern: str) -> bool:
     """Check if rel_path matches a single ignore pattern."""
     rel_path = rel_path.replace('\\', '/')
     name = rel_path.rsplit('/', 1)[-1]
+    if pattern.startswith('/'):
+        # A leading slash anchors the pattern to the project root, which is how
+        # git reads it.  Matching it as a literal path component means a line
+        # somebody wrote to keep a secret out lets the secret straight in.
+        return fnmatch.fnmatch(rel_path, pattern[1:])
     if '/' in pattern:
         # Pattern with slash: match against full path
         return fnmatch.fnmatch(rel_path, pattern)
@@ -165,16 +182,41 @@ def scan_tree(
     root: str,
     default_excludes: frozenset = DEFAULT_EXCLUDES,
     patterns: Optional[List[str]] = None,
+    skipped: Optional[List[Tuple[str, str]]] = None,
 ) -> Iterator[Tuple[str, os.stat_result, bool, Optional[str]]]:
     """
     Walk root, yielding (rel_path, stat_result, is_symlink, symlink_target).
     rel_path is relative to root, using forward slashes.
     Symlinks are yielded as symlinks (not followed).
+
+    Only regular files and symlinks are yielded.  A FIFO or a socket cannot be
+    snapshotted and cannot be restored, and opening one blocks until somebody
+    on the other end writes — a snapshot that hangs on a stray pipe gives the
+    person nothing to look at while it does.
+
+    Anything skipped is appended to ``skipped`` as (rel_path, reason) so the
+    caller can say so.  A snapshot that quietly contains less than the project
+    is worse than one that refuses: it is discovered at restore time.
     """
     if patterns is None:
         patterns = load_ignore_patterns(root)
 
-    for dirpath, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
+    def note(path: str, reason: str) -> None:
+        if skipped is not None:
+            skipped.append((path, reason))
+
+    def on_error(exc: OSError) -> None:
+        # os.walk swallows these by default, and a directory that could not be
+        # read looks exactly like a directory that was empty.
+        target = getattr(exc, 'filename', None) or root
+        try:
+            rel = os.path.relpath(target, root).replace(os.sep, '/')
+        except ValueError:
+            rel = str(target)
+        note(rel, str(exc))
+
+    for dirpath, dirnames, filenames in os.walk(root, topdown=True, followlinks=False,
+                                                onerror=on_error):
         # Compute relative path of current directory
         rel_dir = os.path.relpath(dirpath, root)
         if rel_dir == '.':
@@ -199,17 +241,21 @@ def scan_tree(
 
             try:
                 st = os.lstat(full_path)
-            except OSError:
+            except OSError as exc:
+                note(rel_path, str(exc))
                 continue
 
             if stat.S_ISLNK(st.st_mode):
                 try:
                     target = os.readlink(full_path)
-                except OSError:
+                except OSError as exc:
+                    note(rel_path, str(exc))
                     continue
                 yield rel_path, st, True, target
-            else:
+            elif stat.S_ISREG(st.st_mode):
                 yield rel_path, st, False, None
+            else:
+                note(rel_path, 'not a regular file')
 
         # Also check for symlinks in dirnames that were not pruned
         # os.walk with followlinks=False lists dir-symlinks in dirnames
@@ -289,7 +335,9 @@ def save(root: str, message: str = '', force: bool = False) -> Dict:
     total_size = 0
     total_files = 0
     entries = []
-    for rel_path, st, is_lnk, lnk_target in scan_tree(root, DEFAULT_EXCLUDES, patterns):
+    skipped: List[Tuple[str, str]] = []
+    for rel_path, st, is_lnk, lnk_target in scan_tree(root, DEFAULT_EXCLUDES, patterns,
+                                                      skipped=skipped):
         total_files += 1
         if not is_lnk:
             total_size += st.st_size
@@ -324,9 +372,14 @@ def save(root: str, message: str = '', force: bool = False) -> Dict:
             full_path = os.path.join(root, rel_path)
             try:
                 sha = hash_file(full_path)
-            except OSError:
+            except OSError as exc:
+                skipped.append((rel_path, str(exc)))
                 continue
-            store_object(objects, full_path, sha)
+            try:
+                store_object(objects, full_path, sha)
+            except OSError as exc:
+                skipped.append((rel_path, str(exc)))
+                continue
             files.append({
                 'path': rel_path,
                 'type': 'file',
@@ -339,11 +392,17 @@ def save(root: str, message: str = '', force: bool = False) -> Dict:
     manifest = {
         'id': snap_id,
         'timestamp': datetime.datetime.now().isoformat(timespec='seconds'),
-        'message': message,
+        'message': one_line(message),
         'file_count': len(files),
         'total_size': sum(f.get('size', 0) for f in files),
         'files': files,
     }
+
+    if skipped:
+        # Recorded in the snapshot itself, not just printed once: what a
+        # snapshot does not contain is the thing you need to know at restore
+        # time, which is months after the sentence scrolled off the screen.
+        manifest['skipped'] = [{'path': p, 'reason': r} for p, r in skipped]
 
     snap_file = _snap_path(store, snap_id)
     with open(snap_file, 'w') as f:
@@ -369,14 +428,27 @@ def list_snapshots(store: str) -> List[Dict]:
     snaps_dir = _snapshots_dir(store)
     if not os.path.isdir(snaps_dir):
         return []
+    try:
+        names = sorted(os.listdir(snaps_dir))
+    except OSError:
+        return []
     results = []
-    for fname in sorted(os.listdir(snaps_dir)):
-        if fname.endswith('.json'):
-            try:
-                with open(os.path.join(snaps_dir, fname)) as f:
-                    results.append(json.load(f))
-            except (OSError, json.JSONDecodeError):
-                pass
+    for fname in names:
+        if not fname.endswith('.json'):
+            continue
+        try:
+            with open(os.path.join(snaps_dir, fname)) as f:
+                manifest = json.load(f)
+        except (OSError, ValueError):
+            continue
+        # A manifest is an object with an id.  Anything else in this directory
+        # is somebody else's file, and treating it as a snapshot turns every
+        # later `.get` into a TypeError halfway down the listing.
+        if isinstance(manifest, dict) and isinstance(manifest.get('id'), str):
+            manifest.setdefault('files', [])
+            if not isinstance(manifest['files'], list):
+                manifest['files'] = []
+            results.append(manifest)
     return results
 
 
@@ -387,6 +459,10 @@ def resolve_snap_id(store: str, snap_id: Optional[str]) -> str:
         raise RuntimeError('no snapshots found')
     if snap_id is None:
         return snaps[-1]['id']
+    if not snap_id.strip():
+        # An empty prefix matches every snapshot.  With one in the store that
+        # reads as a precise hit, and `unedit drop ''` deletes it.
+        raise RuntimeError('empty snapshot id — give an id, or use --all')
     # Allow prefix matching
     matches = [s['id'] for s in snaps if s['id'].startswith(snap_id)]
     if not matches:
@@ -546,6 +622,7 @@ def restore(
             except OSError:
                 pass
 
+    restored = 0
     for path in to_restore:
         snap_file = snap_index[path]
         full = os.path.join(root, path)
@@ -558,6 +635,7 @@ def restore(
                     else:
                         os.unlink(full)
                 os.symlink(snap_file['target'], full)
+                restored += 1
             except OSError as e:
                 print_fn('warning: could not restore symlink {}: {}'.format(path, e))
         else:
@@ -572,6 +650,7 @@ def restore(
                     else:
                         os.unlink(full)
                 shutil.copy2(obj, full)
+                restored += 1
                 try:
                     os.chmod(full, snap_file['mode'])
                 except OSError:
@@ -579,10 +658,14 @@ def restore(
             except OSError as e:
                 print_fn('warning: could not restore {}: {}'.format(path, e))
 
+    # What was planned and what happened are two different numbers.  Reporting
+    # the plan as the outcome tells somebody their work came back when it did
+    # not, which is the one lie this tool cannot afford.
     result = {
         'restored_from': resolved_id,
         'safety_snapshot': safety_id,
-        'restored': len(to_restore),
+        'restored': restored,
+        'planned': len(to_restore),
         'moved_aside': len(moved_aside),
         'aside_dir': aside_dir,
         'deleted': len(deleted),
@@ -594,8 +677,11 @@ def restore(
 
     print_fn('')
     print_fn('done. {} restored, {} moved aside, {} deleted.'.format(
-        len(to_restore), len(moved_aside), len(deleted)
+        restored, len(moved_aside), len(deleted)
     ))
+    if restored < len(to_restore):
+        print_fn('warning: {} of {} planned files could not be restored.'.format(
+            len(to_restore) - restored, len(to_restore)))
     print_fn('to undo: unedit back {}'.format(safety_id))
 
     return result
@@ -733,6 +819,13 @@ def drop_snapshots(store: str, snap_ids: List[str], all_snaps: bool = False) -> 
         raise RuntimeError('no snapshots to drop')
 
     if all_snaps:
+        if snap_ids:
+            # Silently ignoring the ids means `unedit drop wrong-id --all`
+            # deletes the whole store and reports success.  The person typed
+            # two things; if they disagree, neither is safe to guess at.
+            raise RuntimeError(
+                'give snapshot ids or --all, not both '
+                '(--all already means every snapshot)')
         to_drop = {s['id'] for s in snaps}
     else:
         to_drop = set()
@@ -741,28 +834,37 @@ def drop_snapshots(store: str, snap_ids: List[str], all_snaps: bool = False) -> 
             to_drop.add(resolved)
 
     # Delete snapshot files
+    dropped = 0
     for snap_id in to_drop:
-        sp = _snap_path(store, snap_id)
-        if os.path.exists(sp):
-            os.unlink(sp)
+        try:
+            os.unlink(_snap_path(store, snap_id))
+            dropped += 1
+        except FileNotFoundError:
+            # Something else removed it first.  The end state is the one asked
+            # for, so this is not a failure — it just was not us who did it.
+            pass
 
     # GC: find all hashes still in use
     remaining = list_snapshots(store)
     in_use = set()
     for s in remaining:
         for f in s.get('files', []):
-            if f.get('type') == 'file' and 'hash' in f:
+            if isinstance(f, dict) and f.get('type') == 'file' and 'hash' in f:
                 in_use.add(f['hash'])
 
     # Remove orphaned objects
     gc_count = 0
     objects_dir = _objects_dir(store)
     if os.path.isdir(objects_dir):
-        for prefix in os.listdir(objects_dir):
+        for prefix in sorted(os.listdir(objects_dir)):
             prefix_dir = os.path.join(objects_dir, prefix)
             if not os.path.isdir(prefix_dir):
                 continue
-            for fname in os.listdir(prefix_dir):
+            try:
+                names = os.listdir(prefix_dir)
+            except OSError:
+                continue
+            for fname in names:
                 sha = prefix + fname
                 if sha not in in_use:
                     try:
@@ -777,7 +879,7 @@ def drop_snapshots(store: str, snap_ids: List[str], all_snaps: bool = False) -> 
             except OSError:
                 pass
 
-    return {'dropped': len(to_drop), 'gc_objects': gc_count}
+    return {'dropped': dropped, 'gc_objects': gc_count}
 
 
 # ---------------------------------------------------------------------------

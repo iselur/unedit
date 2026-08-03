@@ -54,13 +54,23 @@ def cmd_save(args) -> int:
     sz = _store._fmt_size(manifest['total_size'])
     store_dir = _store._store_dir(root)
 
+    skipped = manifest.get('skipped') or []
+
     if args.json:
         _print_json({'id': snap_id, 'file_count': fc, 'total_size': manifest['total_size'],
-                     'message': manifest['message'], 'timestamp': manifest['timestamp']})
+                     'message': manifest['message'], 'timestamp': manifest['timestamp'],
+                     'skipped': skipped})
     else:
         print('saved  {}  ({} files, {})'.format(snap_id, fc, sz))
         if args.message:
-            print('       {}'.format(args.message))
+            print('       {}'.format(_store.one_line(args.message)))
+        for entry in skipped[:10]:
+            # Named, not counted: "3 files skipped" is not something you can
+            # act on, and the whole point is deciding whether it mattered.
+            print('       not captured: {}  ({})'.format(
+                _store.one_line(entry.get('path', '')), entry.get('reason', '')))
+        if len(skipped) > 10:
+            print('       ... and {} more not captured'.format(len(skipped) - 10))
         gitignore_hint = os.path.join(root, '.gitignore')
         if os.path.isfile(gitignore_hint):
             # Check if .unedit is already in .gitignore
@@ -86,7 +96,10 @@ def cmd_list(args) -> int:
             _print_json([])
         else:
             print('no snapshots. run: unedit save')
-        return 1
+        # An empty store is not a finding.  Exit 1 means "something to report",
+        # and a script that branches on it should not see "nothing here yet"
+        # and conclude that something went wrong.
+        return 0
 
     if args.json:
         out = []
@@ -94,7 +107,7 @@ def cmd_list(args) -> int:
             out.append({
                 'id': s['id'],
                 'timestamp': s.get('timestamp', ''),
-                'message': s.get('message', ''),
+                'message': _store.one_line(s.get('message', '')),
                 'file_count': s.get('file_count', 0),
                 'total_size': s.get('total_size', 0),
             })
@@ -105,7 +118,7 @@ def cmd_list(args) -> int:
     # newest first
     for s in reversed(snaps):
         ts = _fmt_ts(s.get('timestamp', ''))
-        msg = s.get('message', '')
+        msg = _store.one_line(s.get('message', ''))
         fc = s.get('file_count', 0)
         sz = _store._fmt_size(s.get('total_size', 0))
         line = '{}  {}  {} files  {}'.format(s['id'], ts, fc, sz)
@@ -122,6 +135,10 @@ def cmd_show(args) -> int:
         manifest, files = _store.show_snapshot(store, args.id)
     except RuntimeError as e:
         return _err(str(e))
+    except (OSError, ValueError) as e:
+        # The manifest was there a moment ago when it was listed.  Something
+        # else moved it, or it is not the JSON it claims to be.
+        return _err('could not read that snapshot: {}'.format(e))
 
     if args.json:
         _print_json({
@@ -139,8 +156,9 @@ def cmd_show(args) -> int:
     print('  {} files'.format(manifest.get('file_count', len(files))))
     print('')
     for f in sorted(files, key=lambda x: x['path']):
+        path = _store.one_line(f['path'])
         if f['type'] == 'symlink':
-            print('  {} -> {}'.format(f['path'], f['target']))
+            print('  {} -> {}'.format(path, _store.one_line(f.get('target', ''))))
         else:
             sz = _store._fmt_size(f.get('size', 0))
             ts_str = ''
@@ -150,7 +168,7 @@ def cmd_show(args) -> int:
                     ts_str = '  ' + datetime.datetime.fromtimestamp(f['mtime']).strftime('%Y-%m-%d %H:%M')
                 except (OSError, OverflowError, ValueError):
                     pass
-            print('  {:40s}  {:>10s}{}'.format(f['path'], sz, ts_str))
+            print('  {:40s}  {:>10s}{}'.format(path, sz, ts_str))
     return 0
 
 

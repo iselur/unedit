@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "unedit"
-version = "0.1.1"
+version = "0.1.2"
 description = "Snapshot your working tree before an agent edits it, step back if you do not like the result. Zero dependencies."
 readme = "README.md"
 license = { text = "MIT" }
