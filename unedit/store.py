@@ -830,6 +830,17 @@ def restore(
     print_fn('plan:')
     print_fn('  {} files to restore'.format(len(to_restore)))
     print_fn('  {} new files to {} (created since snapshot)'.format(len(new_files), aside_action))
+    if not snap_index:
+        # `back` to an empty snapshot is not a no-op: everything present is new
+        # relative to it, so all of it gets moved aside or deleted and nothing
+        # arrives to replace it.  "done. 0 restored" was the only thing said
+        # about that, after the fact.  Older versions wrote empty snapshots
+        # freely whenever an ignore rule happened to match the whole tree, so
+        # one can be sitting in any store, and the person choosing it is
+        # choosing it because they believe their work is in it.
+        print_fn('')
+        print_fn('note: this snapshot is empty — it holds no files at all, so')
+        print_fn('      nothing will come back; this only clears what is here.')
     print_fn('')
 
     if not yes:

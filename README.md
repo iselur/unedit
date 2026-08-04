@@ -147,6 +147,8 @@ $ unedit save --json -m "json test"
   "total_size": 168,
   "message": "json test",
   "timestamp": "2026-08-02T23:02:37+01:00",
+  "empty": false,
+  "nothing_captured": false,
   "skipped": []
 }
 ```
@@ -253,6 +255,20 @@ unedit occupies a specific gap: no background watcher required, no tie to any sp
   "$(cat NOTES.md)"` is an ordinary thing for a script to do, and it used to
   scroll every other snapshot off the screen. Nothing is lost — the manifest
   and `--json` keep the whole value.
+
+- **An empty snapshot is not a safety net.** An ignore rule that happens to
+  match the whole project — a `.gitignore` containing `*`, a vendored tree
+  where the checked-in files are all excluded — used to produce `saved  …
+  (0 files, 0 B)` on exit `0`. The count was on screen and nobody reads a
+  count next to the word *saved*; the net had no floor in it, and that was
+  discovered at restore time, which is the one place it cannot be fixed.
+  A save that captures nothing while the directory has files in it now says
+  so, names one of the files it did not take and the ignore file responsible,
+  and exits `1`. A save of a directory that really is empty is still a save
+  and still exits `0` — going `back` to it means "clear this out again", which
+  is a real thing to want. `back` to any snapshot holding no files now says
+  that before it asks you to confirm, since older versions wrote plenty of
+  them.
 
 - **Detection, not proof.** A diff from unedit tells you which files changed by content (hash) and size. It does not tell you whether the change was intentional, correct, or safe. That judgment is yours.
 

@@ -53,6 +53,48 @@ def _print_json(obj) -> None:
     print(json.dumps(obj, indent=2))
 
 
+def _an_uncaptured_file(root: str) -> str:
+    """One file the snapshot did not take, or '' if the tree really is empty.
+
+    Only asked when a snapshot came back holding nothing.  An empty snapshot
+    is legitimate on its own — a directory with nothing in it is a real
+    baseline, and `back` to it means "clear this out again".  The dangerous
+    case prints identically and is not the same thing: the directory is full,
+    an ignore rule matched all of it, and the snapshot is empty anyway.  The
+    person then believes they have something to go back to and does not.
+
+    Walking the tree a second time costs nothing here: this runs only when the
+    first walk captured zero files, and it stops at the first file it finds.
+    Ignored directories are walked too — a project whose only contents are
+    excluded is exactly the case being detected.
+    """
+    store = _store.STORE_DIR_NAME
+    fallback = ''
+    for dirpath, dirnames, filenames in os.walk(root):
+        at_root = os.path.abspath(dirpath) == os.path.abspath(root)
+        if at_root:
+            dirnames[:] = [d for d in dirnames if d != store]
+        for name in sorted(filenames):
+            rel = os.path.relpath(os.path.join(dirpath, name), root)
+            # The ignore file is the least useful thing to hold up as the file
+            # you lost — it is the cause, and naming it reads as circular.  Any
+            # other file makes the point better, so keep looking for one.
+            if at_root and name in ('.gitignore', '.uneditignore'):
+                fallback = fallback or rel
+                continue
+            return rel
+    return fallback
+
+
+def _why_nothing_was_captured(root: str) -> str:
+    """Name the ignore file that is doing it, if there is one to name."""
+    named = [f for f in ('.uneditignore', '.gitignore')
+             if os.path.isfile(os.path.join(root, f))]
+    if not named:
+        return 'excluded by unedit\'s default exclusions'
+    return 'excluded by {}'.format(' or '.join(named))
+
+
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
@@ -73,10 +115,31 @@ def cmd_save(args) -> int:
 
     skipped = manifest.get('skipped') or []
 
+    # A snapshot with no files in it is either an honest baseline or a safety
+    # net with no floor, and until now both printed `saved  … (0 files, 0 B)`.
+    # The count was on screen the whole time, which is exactly the sort of true
+    # detail nobody reads next to a success word: the person ran `save` so that
+    # they would have something to go back to, saw `saved`, and had nothing.
+    uncaptured = _an_uncaptured_file(root) if fc == 0 else ''
+
     if args.json:
         _print_json({'id': snap_id, 'file_count': fc, 'total_size': manifest['total_size'],
                      'message': manifest['message'], 'timestamp': manifest['timestamp'],
+                     # `empty` is true of both cases — the snapshot holds no
+                     # files either way, and `back` to it restores nothing.
+                     # `nothing_captured` is the one that means the directory
+                     # was not empty and the snapshot is anyway.
+                     'empty': fc == 0,
+                     'nothing_captured': bool(uncaptured),
                      'skipped': skipped})
+    elif uncaptured:
+        print('nothing captured: this directory has files in it and the '
+              'snapshot has none.')
+        print('       e.g. {}  ({})'.format(
+            _store.row(uncaptured), _why_nothing_was_captured(root)))
+        print('       {} exists but holds nothing, so `unedit back` to it '
+              'restores'.format(snap_id))
+        print('       nothing — and clears whatever is here now.')
     else:
         print('saved  {}  ({} files, {})'.format(snap_id, fc, sz))
         if args.message:
@@ -101,6 +164,13 @@ def cmd_save(args) -> int:
                 pass
         elif os.path.isdir(os.path.join(root, '.git')):
             print('hint: add .unedit/ to your .gitignore')
+    if uncaptured:
+        # 1, this tool's word for "the command did not do what you asked" — the
+        # same code a restore returns when it puts back fewer files than it
+        # planned to.  Not 2: nothing was mistyped, and the snapshot was
+        # written.  A wrapper like `unedit save && npm test` should stop here,
+        # because the thing it was saving against is not saved.
+        return 1
     return 0
 
 
