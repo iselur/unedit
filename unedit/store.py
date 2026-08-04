@@ -69,8 +69,24 @@ _SNAPSHOT_NAME_RE = re.compile(r'^\d{8}-\d{6}-\d{6}-[a-z0-9]{4}\.json$')
 
 def _new_id() -> str:
     """Generate a sortable snapshot ID: YYYYMMDD-HHMMSS-uuuuuu-xxxx.
-    The microsecond field (uuuuuu) ensures correct ordering within the same second."""
-    now = datetime.datetime.now()
+
+    The microsecond field (uuuuuu) ensures correct ordering within the same
+    second.  The clock is UTC, because everything downstream depends on these
+    sorting in the order they were taken — `scan_snapshots` sorts the directory
+    listing, `resolve_snap_id(None)` takes the last one, `unedit back` restores
+    it — and local time does not always go forwards.
+
+    Let daylight saving end between two snapshots, or carry the laptop into
+    another zone, and the newer one sorted first:
+
+        20260804-183607-191573-jj8w  — A, taken first
+        20260804-093608-241096-wz9e  — B, taken a second later
+
+    `unedit back` then restored A and reported one file restored, which is a
+    wrong restore reported as a right one.  UTC only ever goes forwards.  The
+    manifest keeps local time for reading.
+    """
+    now = datetime.datetime.now(datetime.timezone.utc)
     ts = now.strftime('%Y%m%d-%H%M%S')
     us = '{:06d}'.format(now.microsecond)
     suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
@@ -452,7 +468,9 @@ def save(root: str, message: str = '', force: bool = False) -> Dict:
 
     manifest = {
         'id': snap_id,
-        'timestamp': datetime.datetime.now().isoformat(timespec='seconds'),
+        # Local time, because a person reads it, and with its offset, because
+        # a stamp without one means a different instant on every machine.
+        'timestamp': datetime.datetime.now().astimezone().isoformat(timespec='seconds'),
         'message': one_line(message),
         'file_count': len(files),
         'total_size': sum(f.get('size', 0) for f in files),
@@ -749,7 +767,9 @@ def restore(
     # Execute restore
     aside_dir = None
     if new_files and not hard:
-        ts = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
+        # UTC, for the same reason snapshot ids are: these directories sit
+        # beside each other and the newest has to be the last one.
+        ts = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d-%H%M%S')
         aside_dir = os.path.join(store, 'aside', ts)
 
     deleted = []

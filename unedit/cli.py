@@ -29,8 +29,24 @@ def _err(msg: str, code: int = 2) -> int:
 
 
 def _fmt_ts(ts: str) -> str:
-    """Shorten ISO timestamp for display."""
-    return ts.replace('T', ' ')
+    """Shorten ISO timestamp for display.
+
+    Manifests carry an offset now, so the stored stamp reads
+    `2026-08-04T09:36:08+01:00`.  It is dropped here: the time shown is already
+    the local one, and a column of trailing `+01:00` is a fact you knew.
+    Stores written before the offset existed have nothing to drop.
+    """
+    ts = ts.replace('T', ' ')
+    body, sign, _ = ts.rpartition('+')
+    if sign and len(ts) - len(body) == 6:
+        return body
+    if ts.endswith('Z'):
+        return ts[:-1]
+    # A `-` offset, but only when it trails a time rather than being part of
+    # the date: `2026-08-04 09:36:08-07:00`.
+    if len(ts) > 6 and ts[-6] == '-' and ts[-3] == ':' and ':' in ts[:-6]:
+        return ts[:-6]
+    return ts
 
 
 def _print_json(obj) -> None:

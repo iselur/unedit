@@ -146,7 +146,7 @@ $ unedit save --json -m "json test"
   "file_count": 5,
   "total_size": 168,
   "message": "json test",
-  "timestamp": "2026-08-02T23:02:37",
+  "timestamp": "2026-08-02T23:02:37+01:00",
   "skipped": []
 }
 ```
@@ -161,6 +161,11 @@ It also respects `.gitignore` and `.uneditignore` (same format: one glob per lin
 
 ## Safety guard rails
 
+- Snapshot ids carry a UTC clock, so the newest one is always the last one.
+  `unedit back` with no id restores the newest, and local time does not always
+  go forwards — daylight saving ends, a laptop lands in another zone — which
+  once had `back` restore an older snapshot and report success. The timestamp
+  you read in `list` is still your own local time, now with its offset on it.
 - Refuses to snapshot `/`, `/etc`, `/usr`, `/var`, `/opt`, `/System`, `/Windows`, or your home directory.
 - Refuses (with a `--force` escape) when the tree exceeds 2 GB or 50,000 files.
 - Symlinks are stored as symlinks and restored as symlinks. They are never followed out of the tree.
