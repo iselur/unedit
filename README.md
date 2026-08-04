@@ -80,6 +80,7 @@ unedit back [ID] [--yes] [--hard]     restore a snapshot (auto-saves first)
 unedit diff [ID] [--patch] [--json]   what changed since a snapshot
 unedit drop ID... | --all             delete snapshots and reclaim disk space
 unedit where [--json]                 print the snapshot directory and disk used
+unedit --version                      print the version and exit
 ```
 
 All commands accept `--project PATH` (or `--dir PATH`, the older spelling) to
