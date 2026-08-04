@@ -73,19 +73,20 @@ Because the moment things go wrong is precisely the moment you cannot trust the 
 ## Commands
 
 ```
-unedit save [-m MESSAGE] [--force]    snapshot the current directory tree
-unedit list [--json]                  snapshots: id, when, message, file count, size
-unedit show [ID] [--json]             list every file in a snapshot with sizes
-unedit back [ID] [--yes] [--hard]     restore a snapshot (auto-saves first)
-unedit diff [ID] [--patch] [--json]   what changed since a snapshot
-unedit drop ID... | --all             delete snapshots and reclaim disk space
-unedit where [--json]                 print the snapshot directory and disk used
-unedit --version                      print the version and exit
+unedit save [-m MSG] [--force]           snapshot the current directory tree
+unedit list                              snapshots: id, when, message, file count, size
+unedit show [ID]                         list every file in a snapshot with sizes
+unedit back [ID] [--yes] [--hard] [--force]  restore a snapshot (auto-saves first)
+unedit diff [ID] [--patch]               what changed since a snapshot
+unedit drop ID... | --all                delete snapshots and reclaim disk space
+unedit where                             print the snapshot directory and disk used
+unedit --version                         print the version and exit
 ```
 
-All commands accept `--project PATH` (or `--dir PATH`, the older spelling) to
-operate on a directory other than `.`, before or after the subcommand. A path
-that isn't there is an error naming it, not a directory it quietly creates.
+All commands accept `--json`, and all accept `--project PATH` (or `--dir
+PATH`, the older spelling) to operate on a directory other than `.`, before or
+after the subcommand. A path that isn't there is an error naming it, not a
+directory it quietly creates.
 
 ### back: how new files are handled
 

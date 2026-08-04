@@ -2,13 +2,16 @@
 unedit command-line interface.
 
 Commands:
-  unedit save [-m MESSAGE] [--force]
-  unedit list [--json]
-  unedit show [ID] [--json]
+  unedit save [-m MSG] [--force]
+  unedit list
+  unedit show [ID]
   unedit back [ID] [--yes] [--hard] [--force]
-  unedit diff [ID] [--patch] [--json]
+  unedit diff [ID] [--patch]
   unedit drop ID [ID ...] | --all
-  unedit where [--json]
+  unedit where
+
+Every one of them also takes --json and --project DIR (--dir DIR is the older
+spelling of the same flag), so they are not repeated on each line.
 """
 
 from __future__ import annotations
