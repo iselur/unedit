@@ -165,6 +165,11 @@ It also respects `.gitignore` and `.uneditignore` (same format: one glob per lin
 - Refuses (with a `--force` escape) when the tree exceeds 2 GB or 50,000 files.
 - Symlinks are stored as symlinks and restored as symlinks. They are never followed out of the tree.
 - Mode bits are preserved and restored.
+- Exit codes: `0` fine, `1` the command failed, `2` usage error, `130`
+  stopped by ctrl-c, `141` the reader hung up (`unedit diff | head`, or
+  `| less` quit with `q`). The last two are not `0`, because a snapshot or
+  a listing that was cut off finished nothing — and `unedit save && rm -rf
+  build` must not delete anything on the strength of one.
 - unedit uses no git internally. Snapshots are a flat content-addressed file store under `.unedit/objects/` with a human-readable JSON manifest per snapshot. No git objects. No git index. Inspectable with any text editor.
 
 ---
