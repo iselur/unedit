@@ -656,6 +656,36 @@ def _lands_inside(root: str, rel_path: str) -> bool:
     return dest == root_real or dest.startswith(root_real + os.sep)
 
 
+def _climbs_out(rel_path: str) -> bool:
+    """Whether the path itself leaves the project, read as text.
+
+    The two ways a path can say so on its own: it is absolute, which makes
+    ``os.path.join`` discard the root entirely, or it climbs with ``..``.  A
+    path that does neither is an ordinary relative path and the manifest
+    holding it has nothing wrong with it — see `_redirected_by`.
+    """
+    if not rel_path or os.path.isabs(rel_path):
+        return True
+    first = os.path.normpath(rel_path).replace(os.sep, '/').split('/')[0]
+    return first == '..'
+
+
+def _redirected_by(root: str, rel_path: str) -> Optional[Tuple[str, str]]:
+    """The symlink in the working tree that sends ``rel_path`` out, if any.
+
+    Returns ``(the path of the link, where it points)``, walking from the
+    project root down so the answer is the outermost redirect — the one to
+    remove.  ``None`` if nothing on disk explains it.
+    """
+    parts = os.path.normpath(rel_path).replace(os.sep, '/').split('/')
+    here = root
+    for i, part in enumerate(parts):
+        here = os.path.join(here, part)
+        if os.path.islink(here):
+            return ('/'.join(parts[:i + 1]), os.path.realpath(here))
+    return None
+
+
 def _refuse_to_write_outside(root: str, manifest: Dict) -> None:
     """A manifest is not trusted input, so check it before touching anything.
 
@@ -667,15 +697,50 @@ def _refuse_to_write_outside(root: str, manifest: Dict) -> None:
     Checked in full, up front.  Stopping partway would mean the safety snapshot
     is already taken and some files are already overwritten, which leaves the
     tree in a state nobody asked for.
+
+    Two different things get stopped here and they are reported separately.  A
+    manifest naming `../../.ssh/authorized_keys` is a snapshot that is lying.  A
+    manifest naming `notes.txt`, where `notes.txt` has since been replaced by a
+    symlink to somewhere else, is an innocent snapshot and an interfered-with
+    working tree.  Told the first sentence for the second case, a person goes
+    and inspects a snapshot that has nothing wrong with it, while the symlink
+    that actually stopped the restore sits unmentioned.
     """
-    escaping = [f.get('path', '') for f in manifest.get('files', [])
-                if not _lands_inside(root, f.get('path', ''))]
-    if escaping:
-        raise RuntimeError(
+    lying, redirected = [], []
+    for entry in manifest.get('files', []):
+        rel = entry.get('path', '')
+        if _lands_inside(root, rel):
+            continue
+        link = None if _climbs_out(rel) else _redirected_by(root, rel)
+        if link is None:
+            lying.append(rel)
+        else:
+            redirected.append((rel, link[0], link[1]))
+
+    if not lying and not redirected:
+        return
+
+    parts = []
+    if lying:
+        parts.append(
             'snapshot names {} path(s) outside the project and was not '
             'applied:\n  {}\n'
             'a snapshot only ever restores files under {}'.format(
-                len(escaping), '\n  '.join(sorted(escaping)[:10]), root))
+                len(lying), '\n  '.join(sorted(lying)[:10]), root))
+    if redirected:
+        parts.append(
+            '{} path(s) in the project now lead outside it, and nothing was '
+            'restored:\n  {}\n'
+            'a symlink was put there after the snapshot was taken. remove it '
+            'and run the restore again — unedit only ever writes under '
+            '{}'.format(
+                len(redirected),
+                '\n  '.join(
+                    '{} (symlink {} -> {})'.format(rel, link, dest)
+                    if link != rel else '{} (symlink -> {})'.format(rel, dest)
+                    for rel, link, dest in sorted(redirected)[:10]),
+                root))
+    raise RuntimeError('\n\n'.join(parts))
 
 
 def restore(

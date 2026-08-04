@@ -169,6 +169,12 @@ It also respects `.gitignore` and `.uneditignore` (same format: one glob per lin
 - Refuses to snapshot `/`, `/etc`, `/usr`, `/var`, `/opt`, `/System`, `/Windows`, or your home directory.
 - Refuses (with a `--force` escape) when the tree exceeds 2 GB or 50,000 files.
 - Symlinks are stored as symlinks and restored as symlinks. They are never followed out of the tree.
+- A restore that would write outside the project is refused whole, before
+  anything is touched — no safety snapshot, no partly-restored tree, exit `2`.
+  It says which of the two it was: a snapshot naming a path outside the
+  project, or an ordinary path that a symlink now redirects. The second one
+  is not the snapshot's fault, and the message names the link and where it
+  leads, because that is the thing to remove.
 - Mode bits are preserved and restored.
 - Exit codes: `0` fine, `1` the command failed, `2` usage error, `130`
   stopped by ctrl-c, `141` the reader hung up (`unedit diff | head`, or
