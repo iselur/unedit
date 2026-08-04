@@ -185,6 +185,27 @@ def display_width(text: str) -> int:
     return sum(_cells(ch) for ch in text)
 
 
+def row(text, width=400):
+    """``one_line``, and a bound, for anything about to be printed as a row.
+
+    ``one_line`` stops a value becoming two rows.  This stops it becoming a
+    screenful.  `unedit save -m "$(cat NOTES.md)"` is an ordinary thing for a
+    script to do, and it put a 200,000-character row in `list` and `show` —
+    every other snapshot scrolled away by one of them.
+
+    Separate from ``one_line`` because that one also runs at save time, where
+    the message is written to disk: cutting there would lose the text, not
+    only the room to show it.  Here nothing is lost — the manifest and
+    ``--json`` still have the whole value, and the row says how much it is not
+    showing.
+    """
+    flat = one_line(text)
+    if len(flat) <= width:
+        return flat
+    return "{}… (+{:,} more characters, see --json)".format(
+        flat[:width], len(flat) - width)
+
+
 def pad(text: str, width: int) -> str:
     """``ljust`` in cells rather than characters."""
     return text + ' ' * max(0, width - display_width(text))

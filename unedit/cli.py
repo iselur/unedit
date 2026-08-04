@@ -80,12 +80,12 @@ def cmd_save(args) -> int:
     else:
         print('saved  {}  ({} files, {})'.format(snap_id, fc, sz))
         if args.message:
-            print('       {}'.format(_store.one_line(args.message)))
+            print('       {}'.format(_store.row(args.message)))
         for entry in skipped[:10]:
             # Named, not counted: "3 files skipped" is not something you can
             # act on, and the whole point is deciding whether it mattered.
             print('       not captured: {}  ({})'.format(
-                _store.one_line(entry.get('path', '')), entry.get('reason', '')))
+                _store.row(entry.get('path', '')), _store.row(entry.get('reason', ''))))
         if len(skipped) > 10:
             print('       ... and {} more not captured'.format(len(skipped) - 10))
         gitignore_hint = os.path.join(root, '.gitignore')
@@ -156,7 +156,7 @@ def cmd_list(args) -> int:
     # newest first
     for s in reversed(snaps):
         ts = _fmt_ts(s.get('timestamp', ''))
-        msg = _store.one_line(s.get('message', ''))
+        msg = _store.row(s.get('message', ''))
         fc = s.get('file_count', 0)
         sz = _store._fmt_size(s.get('total_size', 0))
         line = '{}  {}  {} files  {}'.format(s['id'], ts, fc, sz)
@@ -189,16 +189,19 @@ def cmd_show(args) -> int:
         })
         return 0
 
-    print('snapshot: {}'.format(manifest['id']))
+    # Both come out of the manifest on disk, so both are rows, not text:
+    # a newline in the message printed the rest of itself above the file
+    # list, in the same shape as the file list.
+    print('snapshot: {}'.format(_store.row(manifest['id'])))
     ts = _fmt_ts(manifest.get('timestamp', ''))
-    msg = manifest.get('message', '')
+    msg = _store.row(manifest.get('message', ''))
     print('  when: {}{}'.format(ts, '  — ' + msg if msg else ''))
     print('  {} files'.format(manifest.get('file_count', len(files))))
     print('')
     for f in sorted(files, key=lambda x: x['path']):
-        path = _store.one_line(f['path'])
+        path = _store.row(f['path'])
         if f['type'] == 'symlink':
-            print('  {} -> {}'.format(path, _store.one_line(f.get('target', ''))))
+            print('  {} -> {}'.format(path, _store.row(f.get('target', ''))))
         else:
             sz = _store._fmt_size(f.get('size', 0))
             ts_str = ''
@@ -286,7 +289,7 @@ def cmd_diff(args) -> int:
     msg = result.get('snapshot_message', '')
     header = 'diff vs {}  {}'.format(snap_id, ts)
     if msg:
-        header += '  — {}'.format(_store.one_line(msg))
+        header += '  — {}'.format(_store.row(msg))
     print(header)
     print('')
 
@@ -298,26 +301,26 @@ def cmd_diff(args) -> int:
         print('added ({})'.format(len(added)))
         for f in added:
             sz = _store._fmt_size(f.get('size', 0)) if f['type'] == 'file' else 'symlink'
-            print('  + {}  ({})'.format(_store.one_line(f['path']), sz))
+            print('  + {}  ({})'.format(_store.row(f['path']), sz))
 
     if modified:
         print('modified ({})'.format(len(modified)))
         for f in modified:
             if f['type'] == 'symlink':
                 print('  ~ {}  (symlink: {} -> {})'.format(
-                    _store.one_line(f['path']),
-                    _store.one_line(f.get('old_target', '?')),
-                    _store.one_line(f.get('new_target', '?'))))
+                    _store.row(f['path']),
+                    _store.row(f.get('old_target', '?')),
+                    _store.row(f.get('new_target', '?'))))
             else:
                 old = _store._fmt_size(f.get('old_size', 0))
                 new = _store._fmt_size(f.get('new_size', 0))
-                print('  ~ {}  ({} -> {})'.format(_store.one_line(f['path']), old, new))
+                print('  ~ {}  ({} -> {})'.format(_store.row(f['path']), old, new))
 
     if removed:
         print('removed ({})'.format(len(removed)))
         for f in removed:
             sz = _store._fmt_size(f.get('size', 0)) if f['type'] == 'file' else 'symlink'
-            print('  - {}  ({})'.format(_store.one_line(f['path']), sz))
+            print('  - {}  ({})'.format(_store.row(f['path']), sz))
 
     if args.patch and 'patch' in result and result['patch']:
         print('')

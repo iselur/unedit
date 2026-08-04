@@ -244,6 +244,16 @@ unedit occupies a specific gap: no background watcher required, no tie to any sp
 
 - **Symlink targets are stored verbatim.** If a symlink points outside the project tree, unedit stores the target path as-is. Restoring on a different machine may produce a dangling symlink.
 
+- **One snapshot is one row.** A message and a filename both end up in a
+  manifest in `.unedit/`, and both are read by somebody deciding what to
+  restore, so both are flattened to a single line before printing — otherwise
+  a newline in either wrote an extra row shaped exactly like a real entry, and
+  `unedit show` listed a file that is not in the snapshot. Rows are also cut
+  at 400 characters with a marker saying how much was dropped: `unedit save -m
+  "$(cat NOTES.md)"` is an ordinary thing for a script to do, and it used to
+  scroll every other snapshot off the screen. Nothing is lost — the manifest
+  and `--json` keep the whole value.
+
 - **Detection, not proof.** A diff from unedit tells you which files changed by content (hash) and size. It does not tell you whether the change was intentional, correct, or safe. That judgment is yours.
 
 ---
