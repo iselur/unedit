@@ -168,7 +168,10 @@ def cmd_show(args) -> int:
                     ts_str = '  ' + datetime.datetime.fromtimestamp(f['mtime']).strftime('%Y-%m-%d %H:%M')
                 except (OSError, OverflowError, ValueError):
                     pass
-            print('  {:40s}  {:>10s}{}'.format(path, sz, ts_str))
+            # Padded in cells, not characters: a CJK filename is drawn twice as
+            # wide as it is long, and `ljust` would put the size column two
+            # places right of where it is on every other row.
+            print('  {}  {:>10s}{}'.format(_store.pad(path, 40), sz, ts_str))
     return 0
 
 

@@ -762,3 +762,61 @@ class TestVersionFlag(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def _columns(text: str) -> int:
+    """How many terminal cells a string occupies.
+
+    Stated here rather than imported, so this is a claim about terminals and not
+    a restatement of whatever the code happens to do.  CJK is drawn two cells
+    wide; a combining mark sits on the character before it and takes none.
+    """
+    import unicodedata
+    total = 0
+    for ch in text:
+        if unicodedata.category(ch) in ('Mn', 'Me'):
+            continue
+        total += 2 if unicodedata.east_asian_width(ch) in ('W', 'F') else 1
+    return total
+
+
+class TestTheFileTableIsPaddedInCells(unittest.TestCase):
+    """`unedit show` pads its path column with a character count.
+
+    A terminal lays out cells, and a Japanese or emoji filename is drawn twice
+    as wide as it is long — so the size beside it lands in a different column
+    and the list stops lining up.  Non-ASCII filenames are ordinary; nothing
+    about them should be.
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='unedit_width_')
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _show(self, names):
+        import io
+        from contextlib import redirect_stdout
+        make_tree(self.tmpdir, {name: 'x' for name in names})
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            for argv in (['--dir', self.tmpdir, 'save'],
+                         ['--dir', self.tmpdir, 'show']):
+                try:
+                    main(argv)
+                except SystemExit:
+                    pass
+        return [ln for ln in buf.getvalue().splitlines() if ' B  ' in ln]
+
+    def test_the_size_column_starts_in_the_same_place(self):
+        rows = self._show(['a.py', '日本語のファイル.py', 'b.py'])
+        self.assertEqual(len(rows), 3, rows)
+        self.assertEqual(len({_columns(r.split(' B')[0]) for r in rows}),
+                         1, rows)
+
+    def test_a_name_wider_than_the_column_still_gets_its_gap(self):
+        # Over the column width the row must stay readable: the size may sit
+        # further right, but it may not be jammed against the name.
+        rows = self._show(['日' * 30 + '.py'])
+        self.assertIn('  ', rows[0].split('.py')[1])

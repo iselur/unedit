@@ -142,6 +142,32 @@ def block(text) -> str:
         for ch in text)
 
 
+def _cells(ch: str) -> int:
+    """How many terminal cells one character is drawn in."""
+    if unicodedata.category(ch) in ('Mn', 'Me'):
+        # Drawn on top of the character before it; it takes no cell of its own.
+        return 0
+    return 2 if unicodedata.east_asian_width(ch) in ('W', 'F') else 1
+
+
+def display_width(text: str) -> int:
+    """The width of a string in terminal cells, which is not its length.
+
+    A file listing is read by eye, and an eye reads cells.  A filename in
+    Japanese is drawn twice as wide as ``len`` says it is, so a column padded
+    with ``ljust`` puts the size beside it somewhere else and the list stops
+    lining up — and non-ASCII filenames are entirely ordinary.
+    """
+    if text.isascii():
+        return len(text)                # the overwhelmingly common case
+    return sum(_cells(ch) for ch in text)
+
+
+def pad(text: str, width: int) -> str:
+    """``ljust`` in cells rather than characters."""
+    return text + ' ' * max(0, width - display_width(text))
+
+
 def _drives_terminal(ch: str) -> bool:
     """True for a character a terminal acts on instead of showing.
 
