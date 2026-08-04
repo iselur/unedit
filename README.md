@@ -170,6 +170,11 @@ It also respects `.gitignore` and `.uneditignore` (same format: one glob per lin
   `| less` quit with `q`). The last two are not `0`, because a snapshot or
   a listing that was cut off finished nothing — and `unedit save && rm -rf
   build` must not delete anything on the strength of one.
+- A restore that put back fewer files than it planned to exits `1`, not `0`.
+  Files can refuse to come back — a read-only directory, another owner, a full
+  disk — and `unedit back --yes && npm test` must not run the tests against a
+  tree that was never put back. The safety snapshot id is still printed, so
+  there is a way out of a half-done restore.
 - unedit uses no git internally. Snapshots are a flat content-addressed file store under `.unedit/objects/` with a human-readable JSON manifest per snapshot. No git objects. No git index. Inspectable with any text editor.
 
 ---

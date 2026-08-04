@@ -235,6 +235,15 @@ def cmd_back(args) -> int:
 
     if result.get('aborted'):
         return 1
+
+    # The store counts what it planned and what it managed separately, on
+    # purpose.  A file can refuse to come back — a read-only directory, another
+    # owner, a full disk — and it prints a warning when that happens.  But a
+    # warning is for a human, and the person hitting undo is usually not
+    # reading; `unedit back --yes && npm test` reads the exit code.  A tree that
+    # was not put back is a failed command, whether it was one file or all.
+    if result.get('restored', 0) < result.get('planned', 0):
+        return 1
     return 0
 
 
