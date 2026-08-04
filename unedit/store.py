@@ -189,7 +189,8 @@ def load_ignore_patterns(root: str) -> List[str]:
         fpath = os.path.join(root, fname)
         if os.path.isfile(fpath):
             try:
-                with open(fpath, 'r', errors='replace') as f:
+                with open(fpath, 'r', encoding='utf-8',
+                          errors='replace') as f:
                     for line in f:
                         line = line.rstrip('\n').rstrip('\r')
                         # Strip trailing slash (marks directory, but we treat same)
@@ -459,7 +460,11 @@ def save(root: str, message: str = '', force: bool = False) -> Dict:
         manifest['skipped'] = [{'path': p, 'reason': r} for p, r in skipped]
 
     snap_file = _snap_path(store, snap_id)
-    with open(snap_file, 'w') as f:
+    # A manifest is the thing that has to be readable later, and "later" is
+    # often a different machine with a different locale.  Naming the encoding
+    # at both ends is what stops a snapshot taken on a laptop from being
+    # unreadable in the container that needs to restore it.
+    with open(snap_file, 'w', encoding='utf-8') as f:
         json.dump(manifest, f, indent=2)
         f.write('\n')
 
@@ -473,7 +478,7 @@ def save(root: str, message: str = '', force: bool = False) -> Dict:
 def load_manifest(store: str, snap_id: str) -> Dict:
     """Load a snapshot manifest by ID. Raises FileNotFoundError if missing."""
     path = _snap_path(store, snap_id)
-    with open(path) as f:
+    with open(path, encoding='utf-8') as f:
         return json.load(f)
 
 
@@ -491,7 +496,7 @@ def list_snapshots(store: str) -> List[Dict]:
         if not fname.endswith('.json'):
             continue
         try:
-            with open(os.path.join(snaps_dir, fname)) as f:
+            with open(os.path.join(snaps_dir, fname), encoding='utf-8') as f:
                 manifest = json.load(f)
         except (OSError, ValueError):
             continue
@@ -844,9 +849,15 @@ def diff_snapshot(root: str, snap_id: Optional[str], patch: bool = False) -> Dic
             obj_path = _object_path(objects, snap_index[path]['hash'])
             cur_path = os.path.join(root, path)
             try:
-                with open(obj_path, 'r', errors='replace') as f:
+                # Source files are UTF-8; the locale does not get a say.  On a
+                # machine set to C, letting it decide turns every accented word
+                # in the patch into question marks, and the diff is then read
+                # to make a decision about a file that does not exist.
+                with open(obj_path, 'r', encoding='utf-8',
+                          errors='replace') as f:
                     old_lines = f.readlines()
-                with open(cur_path, 'r', errors='replace') as f:
+                with open(cur_path, 'r', encoding='utf-8',
+                          errors='replace') as f:
                     new_lines = f.readlines()
                 diff = list(difflib.unified_diff(
                     old_lines, new_lines,
