@@ -422,6 +422,23 @@ def _write_utf8_if_the_locale_said_nothing() -> None:
 
 
 def main(argv=None) -> None:
+    """Entry point, and the one place ctrl-c is allowed to mean something.
+
+    Snapshotting a large tree takes a moment, and interrupting a command that
+    is taking longer than you expected is ordinary.  A traceback in reply reads
+    especially badly out of this tool: people reach for it when something has
+    already gone wrong, so a crash from the safety net is the last thing they
+    need to see.  130 is the shell's own spelling of "stopped by ctrl-c", and
+    it keeps `unedit save && rm -rf build` from deleting anything on the
+    strength of a snapshot that was never finished.
+    """
+    try:
+        _run(argv)
+    except KeyboardInterrupt:
+        sys.exit(130)
+
+
+def _run(argv=None) -> None:
     _write_utf8_if_the_locale_said_nothing()
     parser = build_parser()
     args = parser.parse_args(argv)
