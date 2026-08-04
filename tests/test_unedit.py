@@ -471,6 +471,28 @@ class TestCLI(TempDirMixin, unittest.TestCase):
         self.assertIn('id', data)
         self.assertIn('file_count', data)
 
+    def test_json_output_save_matches_the_readme(self):
+        # The README prints a whole object, so a reader takes it for the whole
+        # object — anyone parsing our output writes their code against it.  It
+        # shipped without `skipped`, which is always there.
+        import io
+        import re
+        from contextlib import redirect_stdout
+        make_tree(self.tmpdir, {'a.py': 'x'})
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            try:
+                main(['--dir', self.tmpdir, 'save', '--json'])
+            except SystemExit:
+                pass
+        real = json.loads(buf.getvalue())
+        readme = open(os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            'README.md')).read()
+        block = re.search(r'unedit save --json[^\n]*\n(\{.*?\n\})', readme, re.S)
+        self.assertIsNotNone(block, 'the README no longer shows save --json')
+        self.assertEqual(sorted(json.loads(block.group(1))), sorted(real))
+
     def test_json_output_list(self):
         import io
         from contextlib import redirect_stdout

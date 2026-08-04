@@ -5,7 +5,7 @@ A safety net for letting an agent loose on your files.
 Snapshot your working tree before an agent edits it. Step back with one command if you do not like the result. No git required. No daemon running. No background watcher.
 
 ```bash
-pip install 'stillworks[all]'   # all four agent tools, including this one
+pip install 'stillworks[all]'   # all five agent tools, including this one
 pip install unedit              # or just this one, zero dependencies
 ```
 
@@ -142,7 +142,8 @@ $ unedit save --json -m "json test"
   "file_count": 5,
   "total_size": 168,
   "message": "json test",
-  "timestamp": "2026-08-02T23:02:37"
+  "timestamp": "2026-08-02T23:02:37",
+  "skipped": []
 }
 ```
 
