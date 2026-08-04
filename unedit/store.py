@@ -535,6 +535,44 @@ def resolve_snap_id(store: str, snap_id: Optional[str]) -> str:
 # Restore (back)
 # ---------------------------------------------------------------------------
 
+def _lands_inside(root: str, rel_path: str) -> bool:
+    """Whether restoring ``rel_path`` would write inside ``root``.
+
+    Resolved rather than compared as text, because there are three ways out and
+    only one of them is visible in the string.  ``../`` climbs; an absolute path
+    makes ``os.path.join`` discard the root entirely, which is easy to not
+    notice; and a directory symlink is an escape that lives on disk, where
+    reading the path tells you nothing.  ``realpath`` answers all three, and
+    answers them for a leaf that does not exist yet, which is the usual case
+    during a restore.
+    """
+    root_real = os.path.realpath(root)
+    dest = os.path.realpath(os.path.join(root_real, rel_path))
+    return dest == root_real or dest.startswith(root_real + os.sep)
+
+
+def _refuse_to_write_outside(root: str, manifest: Dict) -> None:
+    """A manifest is not trusted input, so check it before touching anything.
+
+    The store is a directory in the working tree — it gets committed and cloned
+    with the repo, and it sits in a tree something else is editing, which is the
+    entire premise of this tool.  Paths in it are meant to be relative to the
+    project root and nothing was making sure they stayed there.
+
+    Checked in full, up front.  Stopping partway would mean the safety snapshot
+    is already taken and some files are already overwritten, which leaves the
+    tree in a state nobody asked for.
+    """
+    escaping = [f.get('path', '') for f in manifest.get('files', [])
+                if not _lands_inside(root, f.get('path', ''))]
+    if escaping:
+        raise RuntimeError(
+            'snapshot names {} path(s) outside the project and was not '
+            'applied:\n  {}\n'
+            'a snapshot only ever restores files under {}'.format(
+                len(escaping), '\n  '.join(sorted(escaping)[:10]), root))
+
+
 def restore(
     root: str,
     snap_id: Optional[str],
@@ -558,6 +596,7 @@ def restore(
     store = _store_dir(root)
     resolved_id = resolve_snap_id(store, snap_id)
     manifest = load_manifest(store, resolved_id)
+    _refuse_to_write_outside(root, manifest)
     objects = _objects_dir(store)
 
     # Build index of snapshot files
