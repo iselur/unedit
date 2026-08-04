@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import random
+import re
 import shutil
 import stat
 import string
@@ -59,6 +60,11 @@ def _fmt_size(n: int) -> str:
         return '{:.1f} MB'.format(n / 1024 ** 2)
     else:
         return '{:.1f} GB'.format(n / 1024 ** 3)
+
+
+# The shape `_new_id` makes, as a manifest filename.  Used to tell one of our
+# files apart from anything else that happens to be in `snapshots/`.
+_SNAPSHOT_NAME_RE = re.compile(r'^\d{8}-\d{6}-\d{6}-[a-z0-9]{4}\.json$')
 
 
 def _new_id() -> str:
@@ -482,23 +488,53 @@ def load_manifest(store: str, snap_id: str) -> Dict:
         return json.load(f)
 
 
-def list_snapshots(store: str) -> List[Dict]:
-    """Return manifests sorted oldest-first. Returns [] if store doesn't exist."""
+def scan_snapshots(store: str) -> Tuple[List[Dict], List[Dict]]:
+    """The snapshots that can be read, and the ones that cannot.
+
+    Good manifests come back oldest-first.  Damaged ones come back as
+    ``{'id', 'file', 'why'}`` — the id is the filename, because that is how
+    these are named and it is the only thing about a damaged one still known
+    to be true.
+
+    They used to be skipped without a word, so a store holding one snapshot
+    could answer `no snapshots`.  For an undo tool that is the worst sentence
+    available: you conclude you never saved and stop looking, when a manifest
+    is only an index and the content it points at is still sitting in
+    ``objects/``.  `.unedit/` lives in the working tree an agent is editing,
+    so this is not a rare state — a save that ran out of disk, an editor that
+    saved over one, a merge conflict in a store somebody committed.
+
+    Only a file *named* like a snapshot can be damaged.  Anything else in the
+    directory is somebody else's file, and reporting it as damage would cry
+    wolf in every store forever.
+    """
     snaps_dir = _snapshots_dir(store)
     if not os.path.isdir(snaps_dir):
-        return []
+        return [], []
     try:
         names = sorted(os.listdir(snaps_dir))
     except OSError:
-        return []
-    results = []
+        return [], []
+    good: List[Dict] = []
+    damaged: List[Dict] = []
+
+    def _damaged(fname: str, why: str) -> None:
+        damaged.append({'id': fname[:-len('.json')], 'file': fname,
+                        'why': why})
+
     for fname in names:
         if not fname.endswith('.json'):
             continue
         try:
             with open(os.path.join(snaps_dir, fname), encoding='utf-8') as f:
                 manifest = json.load(f)
-        except (OSError, ValueError):
+        except ValueError as e:
+            if _looks_like_a_snapshot_name(fname):
+                _damaged(fname, 'not readable as JSON — {}'.format(e))
+            continue
+        except OSError as e:
+            if _looks_like_a_snapshot_name(fname):
+                _damaged(fname, e.strerror or str(e))
             continue
         # A manifest is an object with an id.  Anything else in this directory
         # is somebody else's file, and treating it as a snapshot turns every
@@ -507,16 +543,64 @@ def list_snapshots(store: str) -> List[Dict]:
             manifest.setdefault('files', [])
             if not isinstance(manifest['files'], list):
                 manifest['files'] = []
-            results.append(manifest)
-    return results
+            good.append(manifest)
+        elif _looks_like_a_snapshot_name(fname):
+            _damaged(fname, 'readable, but not a snapshot manifest')
+    return good, damaged
+
+
+def _looks_like_a_snapshot_name(fname: str) -> bool:
+    """Is this file one of ours?
+
+    Snapshot ids are `<date>-<time>-<micros>-<four random chars>`, and the
+    manifest is that plus `.json`.  Matching the shape rather than trying to
+    parse the file is what keeps a README or an editor's scratch file in this
+    directory from being announced as a damaged snapshot.
+    """
+    return _SNAPSHOT_NAME_RE.match(fname) is not None
+
+
+def list_snapshots(store: str) -> List[Dict]:
+    """Return manifests sorted oldest-first. Returns [] if store doesn't exist.
+
+    Damaged manifests are not in here — see `scan_snapshots` for those.  Every
+    caller that reports to a person should use that instead, because an
+    unreadable snapshot missing from a list reads as a snapshot that was never
+    taken.
+    """
+    return scan_snapshots(store)[0]
+
+
+def describe_damage(damaged: List[Dict], store: str) -> str:
+    """What to print about manifests that could not be read."""
+    head = '{} damaged snapshot{} in {}:'.format(
+        len(damaged), '' if len(damaged) == 1 else 's', _snapshots_dir(store))
+    lines = [head]
+    for d in damaged:
+        lines.append('  {}  — {}'.format(d['file'], d['why']))
+    lines.append('a manifest is only an index: the file contents it points at '
+                 'are still in {}'.format(_objects_dir(store)))
+    return '\n'.join(lines)
 
 
 def resolve_snap_id(store: str, snap_id: Optional[str]) -> str:
     """Resolve a snapshot ID (or None → newest). Raises RuntimeError if not found."""
-    snaps = list_snapshots(store)
+    snaps, damaged = scan_snapshots(store)
     if not snaps:
+        if damaged:
+            raise RuntimeError(describe_damage(damaged, store))
         raise RuntimeError('no snapshots found')
     if snap_id is None:
+        # "The newest" has to mean the newest, including when the newest is the
+        # broken one.  Ids sort by time, so a damaged file sorting after the
+        # newest good manifest *is* the newest.  Quietly reaching past it and
+        # restoring the one before would be a wrong restore reported as a right
+        # one — the failure this whole function exists to prevent.
+        newer = [d for d in damaged if d['id'] > snaps[-1]['id']]
+        if newer:
+            raise RuntimeError(
+                '{}\nthe newest snapshot is one of these — name an older id to '
+                'restore it instead'.format(describe_damage(newer, store)))
         return snaps[-1]['id']
     if not snap_id.strip():
         # An empty prefix matches every snapshot.  With one in the store that
@@ -525,6 +609,9 @@ def resolve_snap_id(store: str, snap_id: Optional[str]) -> str:
     # Allow prefix matching
     matches = [s['id'] for s in snaps if s['id'].startswith(snap_id)]
     if not matches:
+        hit = [d for d in damaged if d['id'].startswith(snap_id)]
+        if hit:
+            raise RuntimeError(describe_damage(hit, store))
         raise RuntimeError('no snapshot matching {!r}'.format(snap_id))
     if len(matches) > 1:
         raise RuntimeError('ambiguous id {!r} matches: {}'.format(snap_id, ', '.join(matches)))

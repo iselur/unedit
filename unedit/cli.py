@@ -91,9 +91,9 @@ def cmd_save(args) -> int:
 def cmd_list(args) -> int:
     root = os.path.abspath(args.dir)
     store = _store._store_dir(root)
-    snaps = _store.list_snapshots(store)
+    snaps, damaged = _store.scan_snapshots(store)
 
-    if not snaps:
+    if not snaps and not damaged:
         if args.json:
             _print_json([])
         else:
@@ -105,6 +105,20 @@ def cmd_list(args) -> int:
 
     if args.json:
         out = []
+        # Damaged manifests are listed too, not omitted.  A wrapper reading
+        # this would otherwise draw exactly the wrong conclusion a person
+        # drew — an empty array where a snapshot is sitting on disk.  The id
+        # is real (it is the filename), so `unedit show <id>` still works and
+        # still explains itself; the fields that came from the file are null.
+        for d in reversed(damaged):
+            out.append({
+                'id': d['id'],
+                'timestamp': None,
+                'message': None,
+                'file_count': None,
+                'total_size': None,
+                'damaged': d['why'],
+            })
         for s in reversed(snaps):
             out.append({
                 'id': s['id'],
@@ -114,7 +128,13 @@ def cmd_list(args) -> int:
                 'total_size': s.get('total_size', 0),
             })
         _print_json(out)
+        if damaged:
+            print(_store.describe_damage(damaged, store), file=sys.stderr)
+            return 1
         return 0
+
+    if damaged:
+        print(_store.describe_damage(damaged, store), file=sys.stderr)
 
     # Human-readable table
     # newest first
@@ -127,7 +147,9 @@ def cmd_list(args) -> int:
         if msg:
             line += '  — {}'.format(msg)
         print(line)
-    return 0
+    # A store with something unreadable in it is a finding, whether or not the
+    # readable ones listed fine.
+    return 1 if damaged else 0
 
 
 def cmd_show(args) -> int:

@@ -98,6 +98,8 @@ Default output is a file-level summary (added / modified / removed, with sizes).
 
 Snapshots live in `.unedit/` inside your project directory. Objects are content-addressed (SHA-256): two files with the same content are stored once, even across snapshots. You can inspect any snapshot manifest directly — they are plain JSON under `.unedit/snapshots/`.
 
+A manifest that cannot be read is reported as damaged and named, never skipped: a manifest is only an index, so the file contents it points at are still in `.unedit/objects/` and can be recovered by hand.
+
 Add `.unedit/` to your `.gitignore`.
 
 ---
