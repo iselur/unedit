@@ -20,6 +20,7 @@ import stat
 import string
 import sys
 import time
+import unicodedata
 from typing import Dict, Iterator, List, Optional, Tuple
 
 
@@ -113,15 +114,42 @@ def check_safe_root(root: str) -> Optional[str]:
 
 
 def one_line(text) -> str:
-    """Text that cannot become two rows of a table.
+    """Text that cannot become two rows of a table, or drive the terminal.
 
     A snapshot message and a filename are both attacker-adjacent: a newline in
     either forges a row that looks exactly like a real snapshot, and `unedit
-    list` is read by people deciding what to restore.
+    list` is read by people deciding what to restore.  The same reader is why
+    the formatting characters go too — a right-to-left override makes a path
+    read as a different file from the one that will be written back.
     """
     if not isinstance(text, str):
         return ''
-    return ''.join(' ' if ch in '\r\n\t' or ord(ch) < 32 else ch for ch in text)
+    return ''.join(' ' if _drives_terminal(ch) else ch for ch in text)
+
+
+def block(text) -> str:
+    """The same, for text that is meant to have lines in it.
+
+    A unified diff is many lines by definition, so the newlines stay; what goes
+    is everything else a terminal would obey rather than show.  This is display
+    only — restoring reads the stored object and never this text — so nothing
+    downstream depends on the characters being kept.
+    """
+    if not isinstance(text, str):
+        return ''
+    return ''.join(
+        ch if ch in '\n\t' else (' ' if _drives_terminal(ch) else ch)
+        for ch in text)
+
+
+def _drives_terminal(ch: str) -> bool:
+    """True for a character a terminal acts on instead of showing.
+
+    That is the control characters (Cc, which is where the escapes live), the
+    formatting characters (Cf, which is where the bidi overrides live), and the
+    two separators that are a line break to a reader but not to ``splitlines``.
+    """
+    return unicodedata.category(ch) in ('Cc', 'Cf', 'Zl', 'Zp')
 
 
 # ---------------------------------------------------------------------------

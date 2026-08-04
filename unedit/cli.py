@@ -234,7 +234,7 @@ def cmd_diff(args) -> int:
     msg = result.get('snapshot_message', '')
     header = 'diff vs {}  {}'.format(snap_id, ts)
     if msg:
-        header += '  — {}'.format(msg)
+        header += '  — {}'.format(_store.one_line(msg))
     print(header)
     print('')
 
@@ -246,28 +246,30 @@ def cmd_diff(args) -> int:
         print('added ({})'.format(len(added)))
         for f in added:
             sz = _store._fmt_size(f.get('size', 0)) if f['type'] == 'file' else 'symlink'
-            print('  + {}  ({})'.format(f['path'], sz))
+            print('  + {}  ({})'.format(_store.one_line(f['path']), sz))
 
     if modified:
         print('modified ({})'.format(len(modified)))
         for f in modified:
             if f['type'] == 'symlink':
                 print('  ~ {}  (symlink: {} -> {})'.format(
-                    f['path'], f.get('old_target', '?'), f.get('new_target', '?')))
+                    _store.one_line(f['path']),
+                    _store.one_line(f.get('old_target', '?')),
+                    _store.one_line(f.get('new_target', '?'))))
             else:
                 old = _store._fmt_size(f.get('old_size', 0))
                 new = _store._fmt_size(f.get('new_size', 0))
-                print('  ~ {}  ({} -> {})'.format(f['path'], old, new))
+                print('  ~ {}  ({} -> {})'.format(_store.one_line(f['path']), old, new))
 
     if removed:
         print('removed ({})'.format(len(removed)))
         for f in removed:
             sz = _store._fmt_size(f.get('size', 0)) if f['type'] == 'file' else 'symlink'
-            print('  - {}  ({})'.format(f['path'], sz))
+            print('  - {}  ({})'.format(_store.one_line(f['path']), sz))
 
     if args.patch and 'patch' in result and result['patch']:
         print('')
-        print(result['patch'])
+        print(_store.block(result['patch']))
 
     return 0
 

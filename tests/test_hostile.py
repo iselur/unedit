@@ -281,5 +281,105 @@ class TestRestoreCountsHonestly(HostileProjectCase):
                          "the only file's object was deleted; nothing was restored")
 
 
+class TestOutputCannotDriveTheTerminal(HostileProjectCase):
+    """Printing a name or a diff is not neutral: a terminal obeys some of it.
+
+    ``unedit`` is read by someone deciding what to restore, and everything they
+    read comes from outside — filenames an agent chose, messages, and under
+    ``--patch`` the file contents themselves.  An escape sequence in any of them
+    clears the screen, retitles the window, or leaves every later line coloured,
+    and a right-to-left override makes a path read as something other than the
+    file that will be written.
+    """
+
+    # Assembled from chr() so this file stays printable: a fixture that can
+    # retitle your window when you open it is its own problem.
+    ESC, BEL, RLO = chr(27), chr(7), chr(0x202E)
+    NASTY = (
+        ESC + "[2J" + ESC + "[H",       # clear the screen
+        ESC + "]0;pwned" + BEL,         # retitle the window
+        ESC + "[31m",                   # colour everything after this
+        RLO,                            # right-to-left override
+        chr(127),                       # delete
+        chr(0x2028),                    # unicode line separator
+    )
+
+    def assertPrintable(self, out, nasty, what):
+        for char in out:
+            if char in "\n\t":
+                continue                # the layout's own whitespace
+            self.assertFalse(
+                ord(char) < 32 or ord(char) == 127,
+                "control character {!r} reached the terminal from {!r} via {}"
+                .format(char, nasty, what))
+        self.assertNotIn(self.RLO, out, what)
+        self.assertNotIn(chr(0x2028), out, what)
+
+    def test_no_view_prints_a_control_character_from_a_message(self):
+        for nasty in self.NASTY:
+            self.save("-m", "note" + nasty + "end")
+            for argv in (("list",), ("show",)):
+                code, out, err = self.run_cli(*argv)
+                self.assertNoCrash(code, err)
+                self.assertPrintable(out, nasty, " ".join(argv))
+
+    def test_no_view_prints_a_control_character_from_a_filename(self):
+        for nasty in self.NASTY:
+            try:
+                self.write("odd" + nasty + "name.txt", "x\n")
+            except (OSError, ValueError) as exc:
+                self.skipTest("filesystem refuses this name: {}".format(exc))
+            self.save()
+            for argv in (("show",), ("diff",)):
+                code, out, err = self.run_cli(*argv)
+                self.assertNoCrash(code, err)
+                self.assertPrintable(out, nasty, " ".join(argv))
+
+    def test_the_patch_body_cannot_drive_the_terminal_either(self):
+        # --patch prints file contents, which is the widest opening of the
+        # three.  It is display only — restoring reads the stored object, never
+        # this text — so cleaning it costs the reader nothing.
+        self.write("app.py", "before\n")
+        self.save()
+        for nasty in self.NASTY:
+            self.write("app.py", "after " + nasty + " tail\n")
+            code, out, err = self.run_cli("diff", "--patch")
+            self.assertNoCrash(code, err)
+            self.assertPrintable(out, nasty, "diff --patch")
+
+    def test_the_text_around_it_survives(self):
+        # Stripping must not eat the name, or the view is safe and useless at
+        # the same time.
+        self.write("keepme.txt", "x\n")
+        self.save("-m", "hello" + self.ESC + "[2Jworld")
+        code, out, err = self.run_cli("show")
+        self.assertNoCrash(code, err)
+        self.assertIn("keepme.txt", out)
+        self.assertIn("world", out)
+
+    def test_the_stored_message_is_clean_not_just_the_printed_one(self):
+        # unedit normalises a message as it is saved rather than as it is shown,
+        # so the escape never reaches the manifest on disk.  That is worth
+        # holding: anything else reading .unedit/ inherits the guarantee.
+        self.save("-m", "note" + self.ESC + "[2J")
+        code, out, err = self.run_cli("list", "--json")
+        self.assertNoCrash(code, err)
+        rows = json.loads(out)                  # still valid JSON
+        self.assertNotIn("\\u001b", out)
+        self.assertEqual(rows[0]["message"], "note [2J")
+
+    def test_a_patch_in_json_is_escaped_rather_than_stripped(self):
+        # A patch is file content and is not normalised on the way in, so --json
+        # carries what was really there.  JSON's own escaping is what makes that
+        # safe to print, which is why this view is left alone.
+        self.write("app.py", "before\n")
+        self.save()
+        self.write("app.py", "after " + self.ESC + "[2J\n")
+        code, out, err = self.run_cli("diff", "--patch", "--json")
+        self.assertNoCrash(code, err)
+        json.loads(out)                         # still valid JSON
+        self.assertIn("\\u001b", out)
+
+
 if __name__ == "__main__":
     unittest.main()
