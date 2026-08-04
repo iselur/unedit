@@ -244,7 +244,14 @@ def cmd_show(args) -> int:
     try:
         manifest, files = _store.show_snapshot(store, args.id)
     except RuntimeError as e:
-        return _err(str(e))
+        msg = str(e)
+        # Same as `back` and `diff`: an empty store is a normal condition,
+        # not a usage error.  Nothing was typed wrong — there is nothing
+        # saved yet, and `unedit show || bail` has to read the same here as
+        # it does on the other two.
+        if msg == 'no snapshots found':
+            return _err(msg, code=1)
+        return _err(msg)
     except (OSError, ValueError) as e:
         # The manifest was there a moment ago when it was listed.  Something
         # else moved it, or it is not the JSON it claims to be.

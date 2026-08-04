@@ -184,6 +184,10 @@ It also respects `.gitignore` and `.uneditignore` (same format: one glob per lin
   `| less` quit with `q`). The last two are not `0`, because a snapshot or
   a listing that was cut off finished nothing — and `unedit save && rm -rf
   build` must not delete anything on the strength of one.
+- An empty store is `1`, not `2`, on every command that can hit it. Nothing
+  was typed wrong — there is simply nothing saved yet. `2` stays reserved for
+  a command line that was wrong, including naming a snapshot id that is not
+  there, so a script can tell "save something first" from "that id is gone".
 - A restore that put back fewer files than it planned to exits `1`, not `0`.
   Files can refuse to come back — a read-only directory, another owner, a full
   disk — and `unedit back --yes && npm test` must not run the tests against a
