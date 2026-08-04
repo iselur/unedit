@@ -1,6 +1,6 @@
 """One family, one word for "that directory over there".
 
-These five tools install together with a single `pip install 'stillworks[all]'`
+These five tools install together with a single `pip install stillworks`
 and are documented as a family, which sets an expectation that a flag learned
 in one of them means the same thing in the next.  `--project DIR` was the word
 in stillworks; here the same idea was spelled `--dir DIR`, so `unedit --project

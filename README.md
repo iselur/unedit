@@ -5,8 +5,7 @@ A safety net for letting an agent loose on your files.
 Snapshot your working tree before an agent edits it. Step back with one command if you do not like the result. No git required. No daemon running. No background watcher.
 
 ```bash
-pip install 'stillworks[all]'   # all five agent tools, including this one
-pip install unedit              # or just this one, zero dependencies
+pip install stillworks   # one install, all five agent tools, including this one
 ```
 
 Or run it straight from a checkout, no install needed — it is stdlib only:
@@ -304,7 +303,7 @@ of them would read as five agreements when it was one assertion.
 One install gets all five, and `stillworks tools` says which ones you have:
 
 ```sh
-pip install 'stillworks[all]'
+pip install stillworks
 stillworks tools
 ```
 
