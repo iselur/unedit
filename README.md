@@ -82,7 +82,9 @@ unedit drop ID... | --all             delete snapshots and reclaim disk space
 unedit where [--json]                 print the snapshot directory and disk used
 ```
 
-All commands accept `--dir PATH` to operate on a directory other than `.`.
+All commands accept `--project PATH` (or `--dir PATH`, the older spelling) to
+operate on a directory other than `.`, before or after the subcommand. A path
+that isn't there is an error naming it, not a directory it quietly creates.
 
 ### back: how new files are handled
 

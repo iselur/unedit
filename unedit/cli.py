@@ -341,12 +341,28 @@ def build_parser() -> argparse.ArgumentParser:
         action='version',
         version='unedit {}'.format(__version__),
     )
+    # Two spellings of one flag.  `--project DIR` is what the rest of this
+    # family calls "that directory over there", and these five install together
+    # under one `pip install`, so a flag learned in one of them should mean the
+    # same thing in the next.  `--dir` is the older name and keeps working.
     p.add_argument(
-        '--dir',
+        '--dir', '--project',
         metavar='DIR',
+        dest='dir',
         default='.',
         help='project root to operate on (default: current directory)',
     )
+
+    # The same pair again, accepted after the subcommand.  `unedit save --dir
+    # build` used to be "unrecognized arguments", which reads as a flag that
+    # does not exist rather than one written a word too late.  SUPPRESS is what
+    # keeps an unnamed flag here from overwriting one given before the
+    # subcommand with the default.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument('--dir', '--project', metavar='DIR', dest='dir',
+                        default=argparse.SUPPRESS,
+                        help='project root to operate on '
+                             '(default: current directory)')
 
     sub = p.add_subparsers(dest='command', metavar='COMMAND')
     sub.required = True
@@ -355,23 +371,23 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument('--json', action='store_true', help='output JSON')
 
     # save
-    ps = sub.add_parser('save', help='snapshot the current directory tree')
+    ps = sub.add_parser('save', parents=[common], help='snapshot the current directory tree')
     ps.add_argument('-m', '--message', metavar='MSG', default='', help='short description')
     ps.add_argument('--force', action='store_true',
                     help='override size/file-count guard rails')
     add_json(ps)
 
     # list
-    pl = sub.add_parser('list', help='show all snapshots')
+    pl = sub.add_parser('list', parents=[common], help='show all snapshots')
     add_json(pl)
 
     # show
-    psh = sub.add_parser('show', help='list files captured in a snapshot')
+    psh = sub.add_parser('show', parents=[common], help='list files captured in a snapshot')
     psh.add_argument('id', nargs='?', metavar='ID', help='snapshot ID (default: newest)')
     add_json(psh)
 
     # back
-    pb = sub.add_parser('back', help='restore a snapshot')
+    pb = sub.add_parser('back', parents=[common], help='restore a snapshot')
     pb.add_argument('id', nargs='?', metavar='ID', help='snapshot ID (default: newest)')
     pb.add_argument('--yes', '-y', action='store_true', help='skip confirmation prompt')
     pb.add_argument('--hard', action='store_true',
@@ -381,19 +397,19 @@ def build_parser() -> argparse.ArgumentParser:
     add_json(pb)
 
     # diff
-    pd = sub.add_parser('diff', help='what changed since a snapshot')
+    pd = sub.add_parser('diff', parents=[common], help='what changed since a snapshot')
     pd.add_argument('id', nargs='?', metavar='ID', help='snapshot ID (default: newest)')
     pd.add_argument('--patch', action='store_true', help='include unified diff for changed files')
     add_json(pd)
 
     # drop
-    pdr = sub.add_parser('drop', help='delete snapshots')
+    pdr = sub.add_parser('drop', parents=[common], help='delete snapshots')
     pdr.add_argument('ids', nargs='*', metavar='ID', help='snapshot IDs to drop')
     pdr.add_argument('--all', action='store_true', help='drop all snapshots')
     add_json(pdr)
 
     # where
-    pw = sub.add_parser('where', help='print snapshot directory and disk usage')
+    pw = sub.add_parser('where', parents=[common], help='print snapshot directory and disk usage')
     add_json(pw)
 
     return p
@@ -459,6 +475,20 @@ def _run(argv=None) -> None:
     fn = cmd_map.get(args.command)
     if fn is None:
         parser.print_help()
+        sys.exit(2)
+
+    # A project root that does not exist is a typo, not a request to create
+    # one.  Every command starts by joining `.unedit` onto this path, so the
+    # old behaviour was to build the whole missing tree and snapshot the empty
+    # directory it had just made — reported as a success.  Where the path was
+    # not writable it failed instead, naming the topmost missing component
+    # (`Permission denied: '/no'`), which is not a path anybody typed.
+    #
+    # Only a directory somebody named can be wrong this way; the default is the
+    # current directory, which exists by definition.
+    if not os.path.isdir(args.dir):
+        what = 'not a directory' if os.path.exists(args.dir) else 'no such directory'
+        print('unedit: {}: {}'.format(what, args.dir), file=sys.stderr)
         sys.exit(2)
 
     sys.exit(fn(args))
