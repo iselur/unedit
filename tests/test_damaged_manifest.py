@@ -119,6 +119,16 @@ class TestADamagedManifest(unittest.TestCase):
         self.assertIn("objects", (result.stdout + result.stderr).lower(),
                       result.stdout + result.stderr)
 
+    def test_it_names_the_directory_the_file_is_in(self):
+        # The filename alone is not somewhere to go: manifests live inside
+        # `.unedit/snapshots`, which is a directory the person has never had
+        # to know about until this moment.  Naming the project directory
+        # instead sends them somewhere the file is not.
+        self.damage()
+        result = self.run_unedit("list")
+        blob = result.stdout + result.stderr
+        self.assertIn(os.path.join(".unedit", "snapshots"), blob, blob)
+
     def test_json_reports_it_too(self):
         # A wrapper reading `--json` must not see an empty list and conclude
         # the same wrong thing a person would.

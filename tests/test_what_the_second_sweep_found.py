@@ -206,7 +206,7 @@ class TestWhatGarbageCollectionLeaves(_Project):
         objects = store._objects_dir(store._store_dir(self.root))
         self.assertTrue(os.listdir(objects), "nothing was stored to collect")
 
-        store.drop_snapshots(store._store_dir(self.root), [snap["id"]])
+        store.drop_snapshots(self.root, [snap["id"]])
 
         leftover = [name for name in os.listdir(objects)
                     if os.path.isdir(os.path.join(objects, name))
@@ -226,7 +226,7 @@ class TestHowADamagedSnapshotIsExplained(_Project):
         os.chmod(manifest, 0)
         self.addCleanup(os.chmod, manifest, stat.S_IRUSR | stat.S_IWUSR)
 
-        good, damaged = store.scan_snapshots(store_dir)
+        good, damaged = store.scan_snapshots(self.root)
         self.assertEqual(good, [])
         self.assertEqual([d["why"] for d in damaged], ["Permission denied"],
                          "the listing shows the exception instead of the reason")

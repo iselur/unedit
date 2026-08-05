@@ -252,7 +252,7 @@ class TestGarbageCollectionWithSymlinks(StoreCase):
         _write(os.path.join(self.root, "real.txt"), "changed\n")
         second = store.save(self.root, message="two")["id"]
 
-        result = store.drop_snapshots(store._store_dir(self.root), [first])
+        result = store.drop_snapshots(self.root, [first])
         self.assertNotIn(first, [s["id"] for s in
                                  store.list_snapshots(store._store_dir(self.root))])
 

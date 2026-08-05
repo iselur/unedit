@@ -181,7 +181,7 @@ class TestNothingElseMoves(unittest.TestCase):
         store.save(self.root, message="second")
         s = store._store_dir(self.root)
         self.assertEqual(len(store.list_snapshots(s)), 2)
-        self.assertEqual(store.resolve_snap_id(s, None),
+        self.assertEqual(store.resolve_snap_id(self.root, None),
                          store.list_snapshots(s)[-1]["id"])
 
     def test_an_older_manifest_without_an_offset_still_reads(self):

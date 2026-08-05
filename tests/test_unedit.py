@@ -347,7 +347,7 @@ class TestDrop(TempDirMixin, unittest.TestCase):
         m = _store.save(self.tmpdir, message='first')
         _store.save(self.tmpdir, message='second')
         store = _store._store_dir(self.tmpdir)
-        _store.drop_snapshots(store, [m['id']])
+        _store.drop_snapshots(self.tmpdir, [m['id']])
         snaps = _store.list_snapshots(store)
         self.assertEqual(len(snaps), 1)
         self.assertEqual(snaps[0]['message'], 'second')
@@ -357,7 +357,7 @@ class TestDrop(TempDirMixin, unittest.TestCase):
         _store.save(self.tmpdir)
         _store.save(self.tmpdir)
         store = _store._store_dir(self.tmpdir)
-        _store.drop_snapshots(store, [], all_snaps=True)
+        _store.drop_snapshots(self.tmpdir, [], all_snaps=True)
         self.assertEqual(_store.list_snapshots(store), [])
 
     def test_drop_gcs_orphan_objects(self):
@@ -366,7 +366,7 @@ class TestDrop(TempDirMixin, unittest.TestCase):
         store = _store._store_dir(self.tmpdir)
         objects = _store._objects_dir(store)
         count_before = sum(len(fs) for _, _, fs in os.walk(objects))
-        _store.drop_snapshots(store, [m['id']])
+        _store.drop_snapshots(self.tmpdir, [m['id']])
         count_after = sum(len(fs) for _, _, fs in os.walk(objects))
         self.assertLess(count_after, count_before)
 
@@ -374,7 +374,7 @@ class TestDrop(TempDirMixin, unittest.TestCase):
         store = _store._store_dir(self.tmpdir)
         os.makedirs(_store._snapshots_dir(store), exist_ok=True)
         with self.assertRaises(RuntimeError):
-            _store.drop_snapshots(store, ['nonexistent'])
+            _store.drop_snapshots(self.tmpdir, ['nonexistent'])
 
 
 class TestWhere(TempDirMixin, unittest.TestCase):

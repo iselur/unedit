@@ -126,6 +126,134 @@ class TestEverythingWasExcluded(Case):
         self.assertTrue(data.get("nothing_captured"), data)
 
 
+class TestTheReasonIsTheRuleThatActuallyMatched(Case):
+    """Which rule left the tree out, rather than which rule files exist.
+
+    The reason used to be worked out a second time, after the walk, by a
+    caller that could only see what was on disk: it named every ignore file
+    present whether or not that file had anything to do with it, and it had no
+    way to name a default exclusion at all when one was there too.  The person
+    is being sent to a file to edit a line, so naming the wrong file costs them
+    the whole trip.  These four pin the four answers apart.
+    """
+
+    def test_it_names_the_ignore_file_the_pattern_came_from(self):
+        # Both files exist and only one of them excludes anything.  The old
+        # answer named both, in a fixed order, with `or` between them.
+        self.write("keep.py")
+        self.write(".gitignore", "# unrelated\n")
+        self.write(".uneditignore", "*\n")
+        code, out, err = self.run_cli("save", "-m", "x")
+        self.assertIn(".uneditignore", out + err, out + err)
+        self.assertNotIn(".gitignore", out + err, out + err)
+
+    def test_the_other_way_round_names_the_other_file(self):
+        # The same fixture with the two contents swapped, because a test of one
+        # of them alone passes on code that always names that one.
+        self.write("keep.py")
+        self.write(".gitignore", "*\n")
+        self.write(".uneditignore", "# unrelated\n")
+        code, out, err = self.run_cli("save", "-m", "x")
+        self.assertIn(".gitignore", out + err, out + err)
+        self.assertNotIn(".uneditignore", out + err, out + err)
+
+    def test_it_quotes_the_line_you_have_to_go_and_change(self):
+        # "excluded by .gitignore" is a file with n lines in it.  The pattern
+        # is the line, and it is quoted the way this family prints anything
+        # that came off disk: it is a line out of a file in the tree being
+        # snapshotted, which is a file the thing being audited can rewrite.
+        self.write("keep.py")
+        # The second line is there so the tree really does come back empty —
+        # an ignore file is itself a file, and a pattern that does not match it
+        # leaves it in the snapshot.
+        self.write(".gitignore", "*.py\n.gitignore\n")
+        code, out, err = self.run_cli("save", "-m", "x")
+        self.assertIn("*.py", out + err, out + err)
+
+    def test_when_both_files_match_it_names_the_one_that_is_read_first(self):
+        # Two ignore files can both exclude the same thing, and then there is
+        # no true answer to "which one did it" — only a stable one.  The order
+        # they are read in is the order they are listed in, and the first match
+        # wins, so the sentence is the same on every run and on every machine.
+        # Without that, the person is sent to one file today and the other one
+        # tomorrow for the same tree.
+        self.write("keep.py")
+        self.write(".gitignore", "*.py\n.gitignore\n.uneditignore\n")
+        self.write(".uneditignore", "*\n")
+        code, out, err = self.run_cli("save", "-m", "x")
+        self.assertIn("*.py", out + err, out + err)
+        self.assertNotIn(".uneditignore", out + err, out + err)
+
+    def test_a_pattern_that_drives_the_terminal_is_escaped_not_obeyed(self):
+        # The pattern is a line out of a file in the tree being snapshotted,
+        # which is a file whatever is being audited can write.  It is printed
+        # the way this family prints anything off disk: escaped and quoted, so
+        # it stays findable, rather than blanked into a line that names no line.
+        self.write("\x1bboom.txt")
+        self.write(".gitignore", "\x1b*\n.gitignore\n")
+        code, out, err = self.run_cli("save", "-m", "x")
+        self.assertIn("\\x1b*", out + err, repr(out + err))
+        self.assertNotIn("\x1b", out + err, repr(out + err))
+
+    def test_the_example_is_never_this_tool_s_own_directory(self):
+        # Second save into the same tree: `.unedit` is there now, and it is
+        # excluded like everything else.  Held up as the file you lost it is
+        # both wrong and alarming — it is the snapshots themselves — and it
+        # outranks an ignore file, so it would win.
+        self.write(".gitignore", "*\n")
+        self.run_cli("save", "-m", "first")
+        self.assertTrue(os.path.isdir(os.path.join(self.root, ".unedit")))
+        code, out, err = self.run_cli("save", "-m", "second")
+        example = [ln for ln in (out + err).splitlines() if "e.g." in ln]
+        self.assertEqual(len(example), 1, out + err)
+        self.assertNotIn(".unedit", example[0], example[0])
+        self.assertIn(".gitignore", example[0], example[0])
+
+    def test_a_default_exclusion_says_so_and_names_no_file(self):
+        # `node_modules` is out by this tool's own rules.  An ignore file
+        # sitting next to it is not the reason, and sending somebody there to
+        # delete a line that is not in it is worse than saying nothing.
+        self.write("node_modules/x.js")
+        # It excludes only itself, so it is present without being the reason
+        # for anything else — which is the state the old answer could not tell
+        # apart from being the reason.
+        self.write(".gitignore", ".gitignore\n")
+        code, out, err = self.run_cli("save", "-m", "x")
+        self.assertNotEqual(code, 0, out + err)
+        self.assertIn("default", (out + err).lower(), out + err)
+        self.assertNotIn("by .gitignore", out + err, out + err)
+
+
+class TestNothingWasExcludedAndNothingCouldBeRead(Case):
+    """The other way to end up with an empty snapshot of a full directory.
+
+    No ignore file, no exclusion — the files are simply unreadable, so every
+    one of them lands in `skipped` and none of them lands in the snapshot.  The
+    person is in exactly the position this whole file is about: they ran `save`
+    to have something to go back to, and there is nothing there.  A check that
+    only looks at what was *excluded* misses this one entirely.
+    """
+
+    def setUp(self):
+        super().setUp()
+        if os.geteuid() == 0:
+            self.skipTest("root reads files whose mode says it may not")
+        self.write("settings.py")
+        os.chmod(os.path.join(self.root, "settings.py"), 0)
+        self.addCleanup(os.chmod, os.path.join(self.root, "settings.py"), 0o600)
+
+    def test_the_json_view_says_nothing_was_captured(self):
+        import json
+        code, out, err = self.run_cli("save", "-m", "x", "--json")
+        data = json.loads(out)
+        self.assertEqual(data["file_count"], 0, data)
+        self.assertTrue(data.get("nothing_captured"), data)
+
+    def test_it_names_the_file_it_could_not_read(self):
+        code, out, err = self.run_cli("save", "-m", "x")
+        self.assertIn("settings.py", out + err, out + err)
+
+
 class TestAGenuinelyEmptyDirectory(Case):
     """Nothing was excluded — there was nothing.  This stays legal."""
 
