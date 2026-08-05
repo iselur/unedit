@@ -69,10 +69,7 @@ class Case(unittest.TestCase):
     def run_cli(self, *argv):
         out, err = io.StringIO(), io.StringIO()
         with redirect_stdout(out), redirect_stderr(err):
-            try:
-                code = main(["--dir", self.root] + list(argv))
-            except SystemExit as exit_:
-                code = exit_.code if isinstance(exit_.code, int) else 2
+            code = main(["--dir", self.root] + list(argv))
         return code, out.getvalue(), err.getvalue()
 
 

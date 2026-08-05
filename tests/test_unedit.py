@@ -402,11 +402,7 @@ class TestCLI(TempDirMixin, unittest.TestCase):
 
     def _run(self, args):
         """Run CLI with given args list. Returns exit code."""
-        try:
-            main(['--dir', self.tmpdir] + args)
-        except SystemExit as e:
-            return e.code
-        return 0
+        return main(['--dir', self.tmpdir] + args)
 
     def test_save_exit_0(self):
         make_tree(self.tmpdir, {'a.py': 'x'})
@@ -680,23 +676,17 @@ class TestHardenRegression(TempDirMixin, unittest.TestCase):
 
     def test_back_exit_1_when_no_snapshots(self):
         """LOW: 'unedit back' with no snapshots must exit 1, not 2."""
-        try:
-            from unedit.cli import main as _main
-            _main(['--dir', self.tmpdir, 'back'])
-        except SystemExit as e:
-            self.assertEqual(e.code, 1, 'expected exit 1 for no-snapshots, got {}'.format(e.code))
-        else:
-            self.fail('expected SystemExit')
+        from unedit.cli import main as _main
+        code = _main(['--dir', self.tmpdir, 'back'])
+        self.assertEqual(code, 1,
+                         'expected exit 1 for no-snapshots, got {}'.format(code))
 
     def test_diff_exit_1_when_no_snapshots(self):
         """LOW: 'unedit diff' with no snapshots must exit 1, not 2."""
-        try:
-            from unedit.cli import main as _main
-            _main(['--dir', self.tmpdir, 'diff'])
-        except SystemExit as e:
-            self.assertEqual(e.code, 1, 'expected exit 1 for no-snapshots, got {}'.format(e.code))
-        else:
-            self.fail('expected SystemExit')
+        from unedit.cli import main as _main
+        code = _main(['--dir', self.tmpdir, 'diff'])
+        self.assertEqual(code, 1,
+                         'expected exit 1 for no-snapshots, got {}'.format(code))
 
     def test_format_size_dead_code_removed(self):
         """LOW: format_size() must not exist — it was dead code with a severe bug."""
@@ -733,12 +723,10 @@ class TestVersionFlag(unittest.TestCase):
 
     def _run(self, args):
         import io
-        buf, old, code = io.StringIO(), sys.stdout, 0
+        buf, old = io.StringIO(), sys.stdout
         sys.stdout = buf
         try:
-            main(args)
-        except SystemExit as exc:
-            code = exc.code or 0
+            code = main(args)
         finally:
             sys.stdout = old
         return code, buf.getvalue()
