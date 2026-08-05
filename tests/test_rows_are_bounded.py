@@ -44,6 +44,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from unedit.cli import main
 from unedit import store as _store
+from unedit import terminal as _terminal
 
 
 class RowCase(unittest.TestCase):
@@ -77,24 +78,24 @@ class TestTheHelper(unittest.TestCase):
     """`row` is `one_line` with a bound; `one_line` itself stays lossless."""
 
     def test_ordinary_text_is_untouched(self):
-        self.assertEqual(_store.row("fixed the parser"), "fixed the parser")
+        self.assertEqual(_terminal.row("fixed the parser"), "fixed the parser")
 
     def test_a_newline_cannot_start_a_second_row(self):
-        got = _store.row("ok\n  forged.py   1.2 KB")
+        got = _terminal.row("ok\n  forged.py   1.2 KB")
         self.assertEqual(len(got.splitlines()), 1, repr(got))
 
     def test_a_long_value_is_cut_and_says_so(self):
-        got = _store.row("x" * 200_000)
+        got = _terminal.row("x" * 200_000)
         self.assertLess(len(got), 500, len(got))
         self.assertIn("more characters", got)
 
     def test_a_value_at_the_cap_is_left_alone(self):
-        self.assertEqual(_store.row("x" * 400), "x" * 400)
+        self.assertEqual(_terminal.row("x" * 400), "x" * 400)
 
     def test_one_line_does_not_cut(self):
         # It is used to sanitize the message *at save time*, and truncating
         # there would lose the text on disk rather than only on screen.
-        self.assertEqual(len(_store.one_line("x" * 200_000)), 200_000)
+        self.assertEqual(len(_terminal.one_line("x" * 200_000)), 200_000)
 
 
 class TestShow(RowCase):
