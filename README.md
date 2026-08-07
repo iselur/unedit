@@ -82,9 +82,9 @@ unedit where                             print the snapshot directory and disk u
 unedit --version                         print the version and exit
 ```
 
-All commands accept `--json`, and all accept `--project PATH` (or `--dir
-PATH`, the older spelling) to operate on a directory other than `.`, before or
-after the subcommand. A path that isn't there is an error naming it, not a
+All commands accept `--json`, and all accept `--project DIR` (or `--dir DIR`,
+the older spelling) to operate on a directory other than `.`, before or after
+the subcommand. A path that isn't there is an error naming it, not a
 directory it quietly creates.
 
 ### back: how new files are handled
