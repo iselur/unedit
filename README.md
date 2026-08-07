@@ -113,10 +113,10 @@ snapshot: 20260802-230236-724062-qaxj
   when: 2026-08-02 23:02:36  — before agent refactor
   4 files
 
-  README.md                                       27 B  2026-08-02 23:02
-  src/app.py                                      46 B  2026-08-02 23:02
-  src/config.py                                   26 B  2026-08-02 23:02
-  tests/test_app.py                               67 B  2026-08-02 23:02
+  README.md                                       27 B  2026-08-02 23:02:35
+  src/app.py                                      46 B  2026-08-02 23:02:35
+  src/config.py                                   26 B  2026-08-02 23:02:35
+  tests/test_app.py                               67 B  2026-08-02 23:02:35
 
 $ unedit diff --patch
 diff vs 20260802-230236-724062-qaxj  2026-08-02 23:02:36  — before agent refactor
